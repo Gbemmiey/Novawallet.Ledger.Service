@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/Solution Items/">
+    <File Path="Directory.Packages.props" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/NovaWallet.Api/NovaWallet.Api.csproj" Id="30f4e7c4-922f-48c5-aeaf-2cd07d858123" />
+  </Folder>
+  <Folder Name="/tests/" />
+</Solution>

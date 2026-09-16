@@ -1,0 +1,35 @@
+﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
+using NovaWallet.Api.Core.Enums;
+using NovaWallet.Api.Core.Models;
+
+namespace NovaWallet.Api.Infrastructure.Data.EntityConfigurations
+{
+    public sealed class TransferOutboxConfiguration : IEntityTypeConfiguration<TransferOutbox>
+    {
+        private const string DefaultEventType = "TransferCompleted";
+
+        public void Configure(EntityTypeBuilder<TransferOutbox> builder)
+        {
+            builder.ToTable("TransferOutbox");
+
+            builder.HasKey(t => t.Id);
+
+            builder.Property(t => t.EventType)
+                .HasMaxLength(40)
+                .HasDefaultValue(DefaultEventType)
+                .IsRequired();
+
+            builder.Property(t => t.Status)
+                .HasConversion<string>()
+                .HasMaxLength(20)
+                .HasDefaultValue(OutboxStatus.Pending)
+                .IsRequired();
+
+            builder.HasOne(t => t.JournalEntry)
+                .WithMany()
+                .HasForeignKey(t => t.JournalEntryId)
+                .OnDelete(DeleteBehavior.Restrict);
+        }
+    }
+}
