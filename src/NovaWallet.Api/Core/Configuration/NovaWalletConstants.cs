@@ -10,6 +10,8 @@ public static class NovaWalletConstants
 {
     public static string CorsPolicyName { get; } = nameof(CorsPolicyName);
 
+    public static string CurrencyCode { get; } = "NGN";
+
     public static string IdempotencyKey => "Idempotency-Key";
 
     /// <summary>

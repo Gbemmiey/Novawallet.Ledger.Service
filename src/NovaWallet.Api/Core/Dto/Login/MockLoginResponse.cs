@@ -18,9 +18,25 @@
 
     public class NipSingleCreditRequest
     {
+        public string SessionId { get; set; }
+        public string TransactionReference { get; set; }
+        public long AmountKobo { get; set; }
+        public string BeneficiaryAccountNumber { get; set; }
+        public string OriginatingAccountNumber { get; set; }
+        public string OriginatingBankCode { get; set; }
+
+        public string Narration { get; set; }
     }
 
     public class NipSingleCreditResponse
     {
+        public string SessionId { get; set; }
+        public string TransactionReference { get; set; }
+        public long AmountKobo { get; set; }
+        public string BeneficiaryAccountNumber { get; set; }
+        public string OriginatingAccountNumber { get; set; }
+
+        public string Narration { get; set; }
+        public string OriginatingBankCode { get; set; }
     }
 }
