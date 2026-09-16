@@ -86,7 +86,6 @@
   <ItemGroup>
     <Folder Include="Application\Validators\" />
     <Folder Include="Core\Validators\" />
-    <Folder Include="Features\Deposits\" />
     <Folder Include="Features\Transfers\" />
     <Folder Include="Workers\" />
   </ItemGroup>

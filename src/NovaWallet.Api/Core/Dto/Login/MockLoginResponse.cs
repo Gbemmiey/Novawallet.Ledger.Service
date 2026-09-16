@@ -15,4 +15,12 @@
         /// </summary>
         public string AccessToken { get; set; } = string.Empty;
     }
+
+    public class NipSingleCreditRequest
+    {
+    }
+
+    public class NipSingleCreditResponse
+    {
+    }
 }
