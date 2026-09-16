@@ -32,6 +32,8 @@ namespace NovaWallet.Api.Application.Services
                 return ServiceApiResponse<CreateWalletResponse>.CreateFailure(ResponseCodes.AccessDenied);
             }
 
+            // TODO : Low - Distributed lock on UserId for Wallet creation
+
             var strategy = _novaWalletDbContext.Database.CreateExecutionStrategy();
 
             return await strategy.ExecuteAsync(async () =>
