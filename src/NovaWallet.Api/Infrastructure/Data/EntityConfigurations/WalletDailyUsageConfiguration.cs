@@ -4,7 +4,8 @@ using NovaWallet.Api.Core.Models;
 
 namespace NovaWallet.Api.Infrastructure.Data.EntityConfigurations
 {
-    public sealed class WalletDailyUsageConfiguration : IEntityTypeConfiguration<WalletDailyUsage>
+    public sealed class WalletDailyUsageConfiguration
+        : IEntityTypeConfiguration<WalletDailyUsage>
     {
         public void Configure(EntityTypeBuilder<WalletDailyUsage> builder)
         {
@@ -15,6 +16,15 @@ namespace NovaWallet.Api.Infrastructure.Data.EntityConfigurations
                 u.WalletId,
                 u.UsageDate
             });
+
+            builder.Property(u => u.WalletId)
+                .IsRequired();
+
+            builder.Property(u => u.UsageDate)
+                .IsRequired();
+
+            builder.Property(u => u.TotalSpentKobo)
+                .IsRequired();
 
             builder.HasOne(u => u.Wallet)
                 .WithMany(w => w.DailyUsages)

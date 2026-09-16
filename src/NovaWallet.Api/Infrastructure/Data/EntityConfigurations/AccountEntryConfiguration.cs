@@ -20,6 +20,24 @@ namespace NovaWallet.Api.Infrastructure.Data.EntityConfigurations
 
             builder.HasKey(a => a.Id);
 
+            builder.Property(a => a.Id)
+                .ValueGeneratedNever();
+
+            builder.Property(a => a.JournalEntryId)
+                .IsRequired();
+
+            builder.Property(a => a.AccountId)
+                .IsRequired();
+
+            builder.Property(a => a.DebitAmountKobo)
+                .IsRequired();
+
+            builder.Property(a => a.CreditAmountKobo)
+                .IsRequired();
+
+            builder.Property(a => a.CreatedAt)
+                .IsRequired();
+
             builder.HasOne(a => a.JournalEntry)
                 .WithMany(j => j.Lines)
                 .HasForeignKey(a => a.JournalEntryId)
@@ -35,8 +53,9 @@ namespace NovaWallet.Api.Infrastructure.Data.EntityConfigurations
             {
                 a.AccountId,
                 a.CreatedAt
-            }).IsDescending(false, true)
-                .HasDatabaseName("IX_AccountEntries_AccountId_CreatedAt");
+            })
+            .IsDescending(false, true)
+            .HasDatabaseName("IX_AccountEntries_AccountId_CreatedAt");
         }
     }
 }

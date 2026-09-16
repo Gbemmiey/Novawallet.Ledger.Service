@@ -12,6 +12,9 @@ namespace NovaWallet.Api.Infrastructure.Data.EntityConfigurations
 
             builder.HasKey(a => a.Id);
 
+            builder.Property(a => a.Id)
+                    .ValueGeneratedNever();
+
             builder.Property(a => a.AccountNumber)
                 .HasMaxLength(32)
                 .IsRequired();
@@ -30,6 +33,9 @@ namespace NovaWallet.Api.Infrastructure.Data.EntityConfigurations
 
             builder.Navigation(a => a.Entries)
                 .UsePropertyAccessMode(PropertyAccessMode.Field);
+
+            builder.Property(a => a.CreatedAt)
+                .IsRequired();
         }
     }
 }

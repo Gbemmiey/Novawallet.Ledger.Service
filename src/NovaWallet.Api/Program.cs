@@ -42,6 +42,7 @@ try
 
     builder.Services.RegisterOpenApiSpecifications();
     builder.Services.AddEndpointsApiExplorer();
+    builder.Services.AddJwtAuthenticationAndAuthorization(builder.Configuration);
 
     // Register customized partner rate limiting policy extension
     builder.Services.RegisterCardIssuanceLimiting();
@@ -79,14 +80,6 @@ try
     // C. Routing Context (Must precede RateLimiting so route metadata is available)
     app.UseRouting();
 
-    // D. Partner Authentication / Context Population (Populates IRequestContext.Partner)
-    //app.UseMiddleware<PartnerAuthenticationMiddleware>();
-
-    app.UseAuthorization();
-
-    // E. Rate Limiting (Evaluates PerPartnerPolicy using populated Partner context)
-    app.UseRateLimiter();
-
     // =========================================================================
     // 4. API Documentation & Scalar UI
     // =========================================================================
@@ -96,6 +89,14 @@ try
         app.UseSwagger();
         app.UseSwaggerUI();
     }
+
+    // D. Partner Authentication / Context Population (Populates IRequestContext.Partner)
+
+    app.UseAuthentication();
+    app.UseAuthorization();
+
+    // E. Rate Limiting (Evaluates PerPartnerPolicy using populated Partner context)
+    app.UseRateLimiter();
 
     // =========================================================================
     // 5. Endpoint Routing & Policy Binding

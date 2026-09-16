@@ -4,7 +4,8 @@ using NovaWallet.Api.Core.Models;
 
 namespace NovaWallet.Api.Infrastructure.Data.EntityConfigurations
 {
-    public sealed class JournalEntryConfiguration : IEntityTypeConfiguration<JournalEntry>
+    public sealed class JournalEntryConfiguration
+        : IEntityTypeConfiguration<JournalEntry>
     {
         public void Configure(EntityTypeBuilder<JournalEntry> builder)
         {
@@ -23,7 +24,9 @@ namespace NovaWallet.Api.Infrastructure.Data.EntityConfigurations
                 .HasMaxLength(64)
                 .IsRequired();
 
-            // Computed in memory and intentionally not persisted.
+            builder.Property(j => j.CreatedAt)
+                .IsRequired();
+
             builder.Ignore(j => j.IsBalanced);
 
             builder.Navigation(j => j.Lines)

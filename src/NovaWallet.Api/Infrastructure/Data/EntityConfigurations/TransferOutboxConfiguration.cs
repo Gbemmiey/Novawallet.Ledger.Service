@@ -5,7 +5,8 @@ using NovaWallet.Api.Core.Models;
 
 namespace NovaWallet.Api.Infrastructure.Data.EntityConfigurations
 {
-    public sealed class TransferOutboxConfiguration : IEntityTypeConfiguration<TransferOutbox>
+    public sealed class TransferOutboxConfiguration
+        : IEntityTypeConfiguration<TransferOutbox>
     {
         private const string DefaultEventType = "TransferCompleted";
 
@@ -14,6 +15,9 @@ namespace NovaWallet.Api.Infrastructure.Data.EntityConfigurations
             builder.ToTable("TransferOutbox");
 
             builder.HasKey(t => t.Id);
+
+            builder.Property(t => t.JournalEntryId)
+                .IsRequired();
 
             builder.Property(t => t.EventType)
                 .HasMaxLength(40)
@@ -24,6 +28,9 @@ namespace NovaWallet.Api.Infrastructure.Data.EntityConfigurations
                 .HasConversion<string>()
                 .HasMaxLength(20)
                 .HasDefaultValue(OutboxStatus.Pending)
+                .IsRequired();
+
+            builder.Property(t => t.CreatedAt)
                 .IsRequired();
 
             builder.HasOne(t => t.JournalEntry)

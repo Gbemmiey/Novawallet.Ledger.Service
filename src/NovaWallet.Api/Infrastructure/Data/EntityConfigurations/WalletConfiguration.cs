@@ -4,7 +4,8 @@ using NovaWallet.Api.Core.Models;
 
 namespace NovaWallet.Api.Infrastructure.Data.EntityConfigurations
 {
-    public sealed class WalletConfiguration : IEntityTypeConfiguration<Wallet>
+    public sealed class WalletConfiguration
+        : IEntityTypeConfiguration<Wallet>
     {
         public void Configure(EntityTypeBuilder<Wallet> builder)
         {
@@ -16,13 +17,25 @@ namespace NovaWallet.Api.Infrastructure.Data.EntityConfigurations
 
             builder.HasKey(w => w.Id);
 
+            builder.Property(w => w.UserId)
+                .IsRequired();
+
             builder.Property(w => w.Currency)
                 .HasMaxLength(3)
                 .HasDefaultValue("NGN")
                 .IsRequired();
 
+            builder.Property(w => w.AvailableBalanceKobo)
+                .IsRequired();
+
             builder.Property(w => w.Status)
                 .HasConversion<int>()
+                .IsRequired();
+
+            builder.Property(w => w.AccountId)
+                .IsRequired();
+
+            builder.Property(w => w.CreatedAt)
                 .IsRequired();
 
             builder.HasIndex(w => w.AccountId)

@@ -12,12 +12,27 @@ namespace NovaWallet.Api.Infrastructure.Data.EntityConfigurations
 
             builder.HasKey(a => a.Id);
 
+            builder.Property(a => a.WalletId)
+                .IsRequired();
+
             builder.Property(a => a.ActorSubject)
                 .HasMaxLength(128)
                 .IsRequired();
 
             builder.Property(a => a.Action)
                 .HasMaxLength(40)
+                .IsRequired();
+
+            builder.Property(a => a.BalanceBeforeKobo)
+                .IsRequired();
+
+            builder.Property(a => a.BalanceAfterKobo)
+                .IsRequired();
+
+            builder.Property(a => a.CorrelationId)
+                .IsRequired();
+
+            builder.Property(a => a.CreatedAt)
                 .IsRequired();
 
             builder.HasOne(a => a.Wallet)

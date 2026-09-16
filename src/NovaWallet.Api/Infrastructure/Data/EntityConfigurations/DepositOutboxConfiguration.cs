@@ -13,10 +13,16 @@ namespace NovaWallet.Api.Infrastructure.Data.EntityConfigurations
 
             builder.HasKey(d => d.Id);
 
+            builder.Property(d => d.ExternalCreditRequestId)
+                .IsRequired();
+
             builder.Property(d => d.Status)
                 .HasConversion<string>()
                 .HasMaxLength(20)
                 .HasDefaultValue(OutboxStatus.Pending)
+                .IsRequired();
+
+            builder.Property(d => d.CreatedAt)
                 .IsRequired();
 
             builder.HasOne(d => d.ExternalCreditRequest)

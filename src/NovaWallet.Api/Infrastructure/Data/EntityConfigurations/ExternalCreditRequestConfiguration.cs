@@ -4,7 +4,8 @@ using NovaWallet.Api.Core.Models;
 
 namespace NovaWallet.Api.Infrastructure.Data.EntityConfigurations
 {
-    public sealed class ExternalCreditRequestConfiguration : IEntityTypeConfiguration<ExternalCreditRequest>
+    public sealed class ExternalCreditRequestConfiguration
+        : IEntityTypeConfiguration<ExternalCreditRequest>
     {
         public void Configure(EntityTypeBuilder<ExternalCreditRequest> builder)
         {
@@ -30,6 +31,9 @@ namespace NovaWallet.Api.Infrastructure.Data.EntityConfigurations
             builder.HasIndex(x => x.TransactionReference)
                 .IsUnique();
 
+            builder.Property(x => x.AmountKobo)
+                .IsRequired();
+
             builder.Property(x => x.BeneficiaryAccountNumber)
                 .HasMaxLength(32)
                 .IsRequired();
@@ -40,6 +44,12 @@ namespace NovaWallet.Api.Infrastructure.Data.EntityConfigurations
 
             builder.Property(x => x.OriginatingBankCode)
                 .HasMaxLength(10)
+                .IsRequired();
+
+            builder.Property(x => x.IsProcessed)
+                .IsRequired();
+
+            builder.Property(x => x.CreatedAt)
                 .IsRequired();
 
             builder.Navigation(x => x.OutboxEntries)

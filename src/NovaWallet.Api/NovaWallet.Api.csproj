@@ -13,6 +13,7 @@
 	<ItemGroup>
 		<!-- API Versioning & OpenAPI / Scalar -->
 		<PackageReference Include="Asp.Versioning.Mvc.ApiExplorer" />
+		<PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" />
 		<PackageReference Include="Microsoft.AspNetCore.JsonPatch" />
 		<PackageReference Include="Microsoft.AspNetCore.OpenApi" />
 		<PackageReference Include="Npgsql.OpenTelemetry" />
