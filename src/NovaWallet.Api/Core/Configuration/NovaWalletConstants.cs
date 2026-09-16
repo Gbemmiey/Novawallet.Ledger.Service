@@ -10,7 +10,7 @@ public static class NovaWalletConstants
 {
     public static string CorsPolicyName { get; } = nameof(CorsPolicyName);
 
-    public static string IdempotencyKey => "X-Idempotency-Key";
+    public static string IdempotencyKey => "Idempotency-Key";
 
     /// <summary>
     /// Gets the JSON serializer options configured for the payment switch.

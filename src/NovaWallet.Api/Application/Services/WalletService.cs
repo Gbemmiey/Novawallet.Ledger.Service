@@ -5,6 +5,7 @@ using NovaWallet.Api.Core.Models;
 using NovaWallet.Api.Core.Models.Response;
 using NovaWallet.Api.Core.Services;
 using NovaWallet.Api.Infrastructure.Data;
+using System.Linq.Expressions;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -29,7 +30,8 @@ namespace NovaWallet.Api.Application.Services
 
             if (userId is null)
             {
-                return ServiceApiResponse<CreateWalletResponse>.CreateFailure(ResponseCodes.AccessDenied);
+                return ServiceApiResponse<CreateWalletResponse>.CreateFailure(
+                    ResponseCodes.AccessDenied);
             }
 
             // TODO : Low - Distributed lock on UserId for Wallet creation
@@ -43,8 +45,9 @@ namespace NovaWallet.Api.Application.Services
                 try
                 {
                     var existingWallet = await _novaWalletDbContext.Wallets
-                        .Include(w => w.Account)
-                        .FirstOrDefaultAsync(w => w.UserId == userId.Value, cancellationToken);
+                        .Where(w => w.UserId == userId.Value)
+                        .Select(WalletResponseProjection)
+                        .FirstOrDefaultAsync(cancellationToken);
 
                     if (existingWallet is not null)
                     {
@@ -53,17 +56,10 @@ namespace NovaWallet.Api.Application.Services
                         _logger.LogWarning(
                             "Wallet creation requested for UserId {UserId}, but a wallet already exists. WalletId: {WalletId}",
                             userId.Value,
-                            existingWallet.Id);
+                            existingWallet.WalletId);
 
                         return ServiceApiResponse<CreateWalletResponse>.CreateSuccess(
-                            new CreateWalletResponse
-                            {
-                                AccountNumber = existingWallet.Account?.AccountNumber ?? string.Empty,
-                                AvailableBalanceKobo = existingWallet.AvailableBalanceKobo,
-                                CurrencyCode = existingWallet.Currency,
-                                WalletId = existingWallet.Id,
-                                Status = existingWallet.Status
-                            });
+                            existingWallet);
                     }
 
                     var account = Account.Create(
@@ -104,15 +100,61 @@ namespace NovaWallet.Api.Application.Services
                 {
                     await transaction.RollbackAsync(CancellationToken.None);
 
-                    _logger.LogError(ex, "Failed to create wallet for UserId {UserId}", userId.Value);
+                    _logger.LogError(
+                        ex,
+                        "Failed to create wallet for UserId {UserId}",
+                        userId.Value);
+
                     return ServiceApiResponse<CreateWalletResponse>.SystemMalFunctioned();
                 }
             });
         }
 
+        public async Task<ServiceApiResponse<CreateWalletResponse>> RetrieveWalletDetails(
+            CancellationToken cancellationToken)
+        {
+            var userId = _requestContext.UserId;
+
+            if (userId is null)
+            {
+                return ServiceApiResponse<CreateWalletResponse>.CreateFailure(
+                    ResponseCodes.AccessDenied);
+            }
+
+            var wallet = await _novaWalletDbContext.Wallets
+                .Where(w => w.UserId == userId.Value)
+                .Select(WalletResponseProjection)
+                .FirstOrDefaultAsync(cancellationToken);
+
+            if (wallet is null)
+            {
+                _logger.LogWarning(
+                    "Wallet not found for UserId {UserId}",
+                    userId.Value);
+
+                return ServiceApiResponse<CreateWalletResponse>.CreateFailure(
+                    ResponseCodes.NoRecordReturned);
+            }
+
+            return ServiceApiResponse<CreateWalletResponse>.CreateSuccess(wallet);
+        }
+
+        private static readonly Expression<Func<Wallet, CreateWalletResponse>> WalletResponseProjection =
+            wallet => new CreateWalletResponse
+            {
+                AccountNumber = wallet.Account == null
+                    ? string.Empty
+                    : wallet.Account.AccountNumber,
+                AvailableBalanceKobo = wallet.AvailableBalanceKobo,
+                CurrencyCode = wallet.Currency,
+                WalletId = wallet.Id,
+                Status = wallet.Status
+            };
+
         public static string GenerateAccountNumber(Guid id)
         {
-            var hash = SHA256.HashData(Encoding.UTF8.GetBytes(id.ToString("N")));
+            var hash = SHA256.HashData(
+                Encoding.UTF8.GetBytes(id.ToString("N")));
 
             var value = BitConverter.ToUInt64(hash, 0) % 10_000_000_000;
 

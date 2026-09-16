@@ -6,5 +6,7 @@ namespace NovaWallet.Api.Core.Services
     public interface IWalletService
     {
         Task<ServiceApiResponse<CreateWalletResponse>> CreateWallet(CancellationToken cancellationToken);
+
+        Task<ServiceApiResponse<CreateWalletResponse>> RetrieveWalletDetails(CancellationToken cancellationToken);
     }
 }
