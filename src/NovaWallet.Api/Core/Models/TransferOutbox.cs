@@ -1,4 +1,5 @@
 ﻿using NovaWallet.Api.Core.Enums;
+using UUIDNext;
 
 namespace NovaWallet.Api.Core.Models
 {
@@ -15,9 +16,9 @@ namespace NovaWallet.Api.Core.Models
         public JournalEntry? JournalEntry { get; private set; }
         public string EventType { get; }
         public OutboxStatus Status { get; private set; }
-        public DateTimeOffset CreatedAt { get; }
+        public DateTime CreatedAt { get; }
 
-        private TransferOutbox(Guid id, Guid journalEntryId, string eventType, OutboxStatus status, DateTimeOffset createdAt)
+        private TransferOutbox(Guid id, Guid journalEntryId, string eventType, OutboxStatus status, DateTime createdAt)
         {
             Id = id;
             JournalEntryId = journalEntryId;
@@ -32,11 +33,11 @@ namespace NovaWallet.Api.Core.Models
                 throw new ArgumentException("JournalEntryId is required.", nameof(journalEntryId));
 
             return new TransferOutbox(
-                id: Guid.NewGuid(),
+                id: Uuid.NewSequential(),
                 journalEntryId: journalEntryId,
                 eventType: eventType,
                 status: OutboxStatus.Pending,
-                createdAt: DateTimeOffset.UtcNow);
+                createdAt: DateTime.UtcNow);
         }
 
         public void MarkPublished()

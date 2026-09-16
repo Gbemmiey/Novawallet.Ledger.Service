@@ -1,4 +1,6 @@
-﻿namespace NovaWallet.Api.Core.Models
+﻿using UUIDNext;
+
+namespace NovaWallet.Api.Core.Models
 {
     /// <summary>
     /// Raw record of an inbound NIP credit callback, captured synchronously by the
@@ -15,14 +17,14 @@
         public string OriginatingAccountNumber { get; }
         public string OriginatingBankCode { get; }
         public bool IsProcessed { get; private set; }
-        public DateTimeOffset CreatedAt { get; }
+        public DateTime CreatedAt { get; }
 
         private readonly List<DepositOutbox> _outboxEntries = [];
         public IReadOnlyCollection<DepositOutbox> OutboxEntries => _outboxEntries;
 
         private ExternalCreditRequest(Guid id, string sessionId, string transactionReference, long amountKobo,
             string beneficiaryAccountNumber, string originatingAccountNumber, string originatingBankCode,
-            bool isProcessed, DateTimeOffset createdAt)
+            bool isProcessed, DateTime createdAt)
         {
             Id = id;
             SessionId = sessionId;
@@ -46,7 +48,7 @@
                 throw new ArgumentException("BeneficiaryAccountNumber is required.", nameof(beneficiaryAccountNumber));
 
             return new ExternalCreditRequest(
-                id: Guid.NewGuid(),
+                id: Uuid.NewSequential(),
                 sessionId: sessionId,
                 transactionReference: transactionReference,
                 amountKobo: amountKobo,
@@ -54,7 +56,7 @@
                 originatingAccountNumber: originatingAccountNumber,
                 originatingBankCode: originatingBankCode,
                 isProcessed: false,
-                createdAt: DateTimeOffset.UtcNow);
+                createdAt: DateTime.UtcNow);
         }
 
         public void MarkProcessed()

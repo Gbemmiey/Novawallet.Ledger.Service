@@ -1,4 +1,6 @@
-﻿namespace NovaWallet.Api.Core.Models
+﻿using UUIDNext;
+
+namespace NovaWallet.Api.Core.Models
 {
     /// <summary>
     /// Insert-only audit trail, deliberately separate from AccountEntries.
@@ -18,10 +20,10 @@
         public long BalanceBeforeKobo { get; }
         public long BalanceAfterKobo { get; }
         public Guid CorrelationId { get; }
-        public DateTimeOffset CreatedAt { get; }
+        public DateTime CreatedAt { get; }
 
         private AuditLog(Guid id, Guid walletId, string actorSubject, string action,
-            long balanceBeforeKobo, long balanceAfterKobo, Guid correlationId, DateTimeOffset createdAt)
+            long balanceBeforeKobo, long balanceAfterKobo, Guid correlationId, DateTime createdAt)
         {
             Id = id;
             WalletId = walletId;
@@ -41,14 +43,14 @@
             if (string.IsNullOrWhiteSpace(action)) throw new ArgumentException("Action is required.", nameof(action));
 
             return new AuditLog(
-                id: Guid.NewGuid(),
+                id: Uuid.NewSequential(),
                 walletId: walletId,
                 actorSubject: actorSubject,
                 action: action,
                 balanceBeforeKobo: balanceBeforeKobo,
                 balanceAfterKobo: balanceAfterKobo,
                 correlationId: correlationId,
-                createdAt: DateTimeOffset.UtcNow);
+                createdAt: DateTime.UtcNow);
         }
     }
 }

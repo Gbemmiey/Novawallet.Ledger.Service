@@ -1,4 +1,5 @@
 ﻿using NovaWallet.Api.Core.Enums;
+using UUIDNext;
 
 namespace NovaWallet.Api.Core.Models
 {
@@ -23,7 +24,7 @@ namespace NovaWallet.Api.Core.Models
         public WalletStatus Status { get; private set; }
         public Guid AccountId { get; }
         public Account? Account { get; private set; }
-        public DateTimeOffset CreatedAt { get; }
+        public DateTime CreatedAt { get; }
 
         private readonly List<WalletDailyUsage> _dailyUsages = [];
         public IReadOnlyCollection<WalletDailyUsage> DailyUsages => _dailyUsages;
@@ -31,7 +32,7 @@ namespace NovaWallet.Api.Core.Models
         // Private constructor used by EF Core constructor binding for materialization,
         // and internally by the Create factory. Never called directly outside this class.
         private Wallet(Guid id, Guid userId, string currency, long availableBalanceKobo,
-            WalletStatus status, Guid accountId, DateTimeOffset createdAt)
+            WalletStatus status, Guid accountId, DateTime createdAt)
         {
             Id = id;
             UserId = userId;
@@ -48,13 +49,13 @@ namespace NovaWallet.Api.Core.Models
             if (accountId == Guid.Empty) throw new ArgumentException("AccountId is required.", nameof(accountId));
 
             return new Wallet(
-                id: Guid.NewGuid(),
+                id: Uuid.NewSequential(),
                 userId: userId,
                 currency: currency,
                 availableBalanceKobo: 0,
                 status: WalletStatus.Active,
                 accountId: accountId,
-                createdAt: DateTimeOffset.Now);
+                createdAt: DateTime.UtcNow);
         }
 
         public void Credit(long amountKobo)

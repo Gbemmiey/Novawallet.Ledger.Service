@@ -1,4 +1,5 @@
 ﻿using NovaWallet.Api.Core.Enums;
+using UUIDNext;
 
 namespace NovaWallet.Api.Core.Models
 {
@@ -16,12 +17,12 @@ namespace NovaWallet.Api.Core.Models
         public string AccountNumber { get; }
         public AccountType AccountType { get; }
         public string Currency { get; }
-        public DateTimeOffset CreatedAt { get; }
+        public DateTime CreatedAt { get; }
 
         private readonly List<AccountEntry> _entries = [];
         public IReadOnlyCollection<AccountEntry> Entries => _entries;
 
-        private Account(Guid id, string accountNumber, AccountType accountType, string currency, DateTimeOffset createdAt)
+        private Account(Guid id, string accountNumber, AccountType accountType, string currency, DateTime createdAt)
         {
             Id = id;
             AccountNumber = accountNumber;
@@ -36,11 +37,11 @@ namespace NovaWallet.Api.Core.Models
                 throw new ArgumentException("AccountNumber is required.", nameof(accountNumber));
 
             return new Account(
-                id: Guid.NewGuid(),
+                id: Uuid.NewSequential(),
                 accountNumber: accountNumber,
                 accountType: accountType,
                 currency: currency,
-                createdAt: DateTimeOffset.UtcNow);
+                createdAt: DateTime.UtcNow);
         }
     }
 }

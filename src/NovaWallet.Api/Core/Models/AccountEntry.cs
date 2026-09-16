@@ -21,10 +21,10 @@
         public Account? Account { get; private set; }
         public long DebitAmountKobo { get; }
         public long CreditAmountKobo { get; }
-        public DateTimeOffset CreatedAt { get; }
+        public DateTime CreatedAt { get; }
 
         private AccountEntry(Guid id, Guid journalEntryId, Guid accountId,
-            long debitAmountKobo, long creditAmountKobo, DateTimeOffset createdAt)
+            long debitAmountKobo, long creditAmountKobo, DateTime createdAt)
         {
             Id = id;
             JournalEntryId = journalEntryId;
@@ -37,13 +37,13 @@
         internal static AccountEntry CreateDebit(Guid journalEntryId, Guid accountId, long amountKobo)
         {
             if (amountKobo <= 0) throw new ArgumentOutOfRangeException(nameof(amountKobo), "Debit amount must be positive.");
-            return new AccountEntry(Guid.NewGuid(), journalEntryId, accountId, amountKobo, 0, DateTimeOffset.UtcNow);
+            return new AccountEntry(Guid.NewGuid(), journalEntryId, accountId, amountKobo, 0, DateTime.UtcNow);
         }
 
         internal static AccountEntry CreateCredit(Guid journalEntryId, Guid accountId, long amountKobo)
         {
             if (amountKobo <= 0) throw new ArgumentOutOfRangeException(nameof(amountKobo), "Credit amount must be positive.");
-            return new AccountEntry(Guid.NewGuid(), journalEntryId, accountId, 0, amountKobo, DateTimeOffset.UtcNow);
+            return new AccountEntry(Guid.NewGuid(), journalEntryId, accountId, 0, amountKobo, DateTime.UtcNow);
         }
     }
 }

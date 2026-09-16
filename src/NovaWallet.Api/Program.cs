@@ -1,7 +1,10 @@
 using FluentValidation;
 using Microsoft.FeatureManagement;
-using NovaWallet.Api.Endpoints;
+using NovaWallet.Api.Core.Services;
 using NovaWallet.Api.Extensions;
+using NovaWallet.Api.Features.Auth;
+using NovaWallet.Api.Features.Wallets;
+using NovaWallet.Api.Http;
 using NovaWallet.Api.Infrastructure.Extensions;
 using NovaWallet.Api.Infrastructure.Extensions.OpenTelemetry;
 using NovaWallet.Api.Middlewares;
@@ -25,6 +28,7 @@ try
         .RegisterPayloadValidation()
         .AddHttpContextAccessor()
         .AddAppHybridCache(builder.Configuration)
+        .AddScoped<IRequestContext, HttpRequestContext>()
         .RegisterSingletonRestsharp()
         .AddCustomCors(builder.Configuration.GetAllowedOrigins())
         .AddFeatureManagement();
@@ -40,7 +44,7 @@ try
         options.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter());
     });
 
-    builder.Services.RegisterOpenApiSpecifications();
+    builder.Services.AddSwaggerAndApiVersioning();
     builder.Services.AddEndpointsApiExplorer();
     builder.Services.AddJwtAuthenticationAndAuthorization(builder.Configuration);
 
@@ -102,8 +106,11 @@ try
     // 5. Endpoint Routing & Policy Binding
     // =========================================================================
 
-    app.MapGroup("/api/v1/partners")
-       .MapPartnerCardEndpoints();
+    app.MapGroup("/api/v1/auth")
+       .MapAuthenticationEndpoints();
+
+    app.MapGroup("/api/v1/wallets")
+        .MapWalletEndpoints();
 
     app.Run();
 }

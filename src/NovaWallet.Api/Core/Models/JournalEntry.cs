@@ -16,7 +16,7 @@
         public Guid Id { get; }
         public string IdempotencyKey { get; }
         public string RequestPayloadHash { get; }
-        public DateTimeOffset CreatedAt { get; }
+        public DateTime CreatedAt { get; }
 
         private readonly List<AccountEntry> _lines = [];
         public IReadOnlyCollection<AccountEntry> Lines => _lines;
@@ -25,7 +25,7 @@
         /// Callers should check this before committing the surrounding DB transaction.</summary>
         public bool IsBalanced => _lines.Sum(l => l.DebitAmountKobo) == _lines.Sum(l => l.CreditAmountKobo);
 
-        private JournalEntry(Guid id, string idempotencyKey, string requestPayloadHash, DateTimeOffset createdAt)
+        private JournalEntry(Guid id, string idempotencyKey, string requestPayloadHash, DateTime createdAt)
         {
             Id = id;
             IdempotencyKey = idempotencyKey;
@@ -40,7 +40,7 @@
             if (string.IsNullOrWhiteSpace(requestPayloadHash))
                 throw new ArgumentException("RequestPayloadHash is required.", nameof(requestPayloadHash));
 
-            return new JournalEntry(Guid.NewGuid(), idempotencyKey, requestPayloadHash, DateTimeOffset.UtcNow);
+            return new JournalEntry(Guid.NewGuid(), idempotencyKey, requestPayloadHash, DateTime.UtcNow);
         }
 
         public AccountEntry AddDebitLine(Guid accountId, long amountKobo)

@@ -1,4 +1,5 @@
 ﻿using NovaWallet.Api.Core.Enums;
+using UUIDNext;
 
 namespace NovaWallet.Api.Core.Models
 {
@@ -13,9 +14,9 @@ namespace NovaWallet.Api.Core.Models
         public Guid ExternalCreditRequestId { get; }
         public ExternalCreditRequest? ExternalCreditRequest { get; private set; }
         public OutboxStatus Status { get; private set; }
-        public DateTimeOffset CreatedAt { get; }
+        public DateTime CreatedAt { get; }
 
-        private DepositOutbox(Guid id, Guid externalCreditRequestId, OutboxStatus status, DateTimeOffset createdAt)
+        private DepositOutbox(Guid id, Guid externalCreditRequestId, OutboxStatus status, DateTime createdAt)
         {
             Id = id;
             ExternalCreditRequestId = externalCreditRequestId;
@@ -29,10 +30,10 @@ namespace NovaWallet.Api.Core.Models
                 throw new ArgumentException("ExternalCreditRequestId is required.", nameof(externalCreditRequestId));
 
             return new DepositOutbox(
-                id: Guid.NewGuid(),
+                id: Uuid.NewSequential(),
                 externalCreditRequestId: externalCreditRequestId,
                 status: OutboxStatus.Pending,
-                createdAt: DateTimeOffset.UtcNow);
+                createdAt: DateTime.UtcNow);
         }
 
         public void MarkProcessed()
