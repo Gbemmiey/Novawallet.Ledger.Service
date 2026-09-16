@@ -82,12 +82,14 @@
 	</ItemGroup>
 
   <ItemGroup>
+    <Folder Include="Application\Services\" />
     <Folder Include="Application\Validators\" />
     <Folder Include="Core\Services\" />
     <Folder Include="Core\Validators\" />
     <Folder Include="Features\Deposits\" />
     <Folder Include="Features\Transfers\" />
     <Folder Include="Features\Wallets\" />
+    <Folder Include="Infrastructure\Providers\" />
     <Folder Include="Workers\" />
   </ItemGroup>
 

@@ -105,7 +105,7 @@ namespace NovaWallet.Api.Infrastructure.Extensions.OpenTelemetry
                     .AddHttpClientInstrumentation()
                     .AddRuntimeInstrumentation()
                     .AddSqlClientInstrumentation()
-                    .AddNpgsqlInstrumentation()
+                    .AddMeter("Npgsql")
                     .AddProcessInstrumentation();
 
                 // ✅ ALWAYS export metrics to OTEL Collector

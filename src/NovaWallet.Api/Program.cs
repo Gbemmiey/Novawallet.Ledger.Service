@@ -1,14 +1,10 @@
 using FluentValidation;
 using Microsoft.FeatureManagement;
-using NovaWallet.Api.Application.Services;
 using NovaWallet.Api.Endpoints;
 using NovaWallet.Api.Extensions;
-using NovaWallet.Api.Http;
 using NovaWallet.Api.Infrastructure.Extensions;
 using NovaWallet.Api.Infrastructure.Extensions.OpenTelemetry;
-using NovaWallet.Api.Infrastructure.Providers;
 using NovaWallet.Api.Middlewares;
-using Scalar.AspNetCore;
 using System.Text.Json.Serialization;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -28,8 +24,6 @@ try
         .RegisterApplicationServices()
         .RegisterPayloadValidation()
         .AddHttpContextAccessor()
-        .AddScoped<IRequestContext, HttpRequestContext>()
-        .AddScoped<IPartnerCacheService, PartnerCacheService>()
         .AddAppHybridCache(builder.Configuration)
         .RegisterSingletonRestsharp()
         .AddCustomCors(builder.Configuration.GetAllowedOrigins())
@@ -49,7 +43,6 @@ try
     builder.Services.RegisterOpenApiSpecifications();
     builder.Services.AddEndpointsApiExplorer();
 
-    builder.Services.RegisterPartnerAuthorization();
     // Register customized partner rate limiting policy extension
     builder.Services.RegisterCardIssuanceLimiting();
 
@@ -87,7 +80,7 @@ try
     app.UseRouting();
 
     // D. Partner Authentication / Context Population (Populates IRequestContext.Partner)
-    app.UseMiddleware<PartnerAuthenticationMiddleware>();
+    //app.UseMiddleware<PartnerAuthenticationMiddleware>();
 
     app.UseAuthorization();
 
@@ -100,13 +93,8 @@ try
 
     if (bool.TryParse(builder.Configuration["Swagger:DisplaySwagger"], out var displaySwagger) && displaySwagger)
     {
-        app.MapOpenApi();
-        app.MapScalarApiReference(options =>
-        {
-            options.WithTitle("Enterprise Card API")
-                   .WithTheme(ScalarTheme.Moon)
-                   .WithOpenApiRoutePattern("/openapi/{documentName}.json");
-        });
+        app.UseSwagger();
+        app.UseSwaggerUI();
     }
 
     // =========================================================================
