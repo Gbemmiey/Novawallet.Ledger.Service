@@ -5,6 +5,7 @@ namespace NovaWallet.Api.Core.Services
 {
     public interface IDepositService
     {
-        Task<ServiceApiResponse<NipSingleCreditResponse>> SubmitDepositRequest(NipSingleCreditRequest nipSingleCreditRequest, CancellationToken cancellationToken)
+        Task<ServiceApiResponse<NipSingleCreditResponse>> SubmitDepositRequest(
+            NipSingleCreditRequest nipSingleCreditRequest, CancellationToken cancellationToken);
     }
 }
