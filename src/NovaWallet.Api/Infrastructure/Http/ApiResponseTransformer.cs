@@ -143,5 +143,25 @@ namespace NovaWallet.Api.Infrastructure.Http
             // Fallback to standard status code mapping if domain execution failed
             return response.ToResult(httpContext);
         }
+
+        /// <summary>
+        /// Transforms a service response into a 202 Accepted custom <see cref="IResult"/>,
+        /// for operations that have been durably recorded but are completed asynchronously
+        /// (e.g. inbound NIP deposit acknowledgment ahead of outbox-driven crediting).
+        /// </summary>
+        public static IResult ToAcceptedResult<T>(this IServiceApiResponse<T> response, HttpContext httpContext)
+        {
+            ArgumentNullException.ThrowIfNull(response);
+
+            if (response.ResponseCode == ResponseCodes.Success.ResponseCode)
+            {
+                Log.Information("Returning Accepted responseCode: {Code}; Message: {Message}", response.ResponseCode, response.ResponseMessage);
+
+                return new ApiResponseResult<T>(response, StatusCodes.Status202Accepted);
+            }
+
+            // Fallback to standard status code mapping if domain execution failed
+            return response.ToResult(httpContext);
+        }
     }
 }
