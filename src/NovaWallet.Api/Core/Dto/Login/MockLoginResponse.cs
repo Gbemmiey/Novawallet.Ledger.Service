@@ -39,4 +39,30 @@
         public string Narration { get; set; }
         public string OriginatingBankCode { get; set; }
     }
+
+
+    public class WalletTransferResponse
+    {
+        public string SourceWalletId { get; set; }
+        public string DestinationWalletId { get; set; }
+        
+        public long AmountInKobo { get; set; }
+        
+        public string Narration { get; set; }
+        
+        public DateTime TransactionDate { get; set; }
+        
+        public string PaymentReference { get; set; }
+    }
+
+    public class WalletTransferRequest
+    {
+        public string SourceWalletId { get; set; }
+        public string DestinationWalletId { get; set; }
+        
+        public long AmountInKobo { get; set; }
+        
+        public string Narration { get; set; }
+    }
+    
 }
