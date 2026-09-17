@@ -4,6 +4,7 @@ using NovaWallet.Api.Core.Services;
 using NovaWallet.Api.Extensions;
 using NovaWallet.Api.Features.Auth;
 using NovaWallet.Api.Features.Deposits;
+using NovaWallet.Api.Features.Transfers;
 using NovaWallet.Api.Features.Wallets;
 using NovaWallet.Api.Http;
 using NovaWallet.Api.Infrastructure.Extensions;
@@ -112,7 +113,8 @@ try
 
     app.MapGroup("/api/v1/wallets")
         .MapWalletEndpoints()
-        .MapDepositEndpoints();
+        .MapDepositEndpoints()
+        .MapTransferEndpoints();
 
     app.Run();
 }

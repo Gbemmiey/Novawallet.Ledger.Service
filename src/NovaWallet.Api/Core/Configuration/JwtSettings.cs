@@ -47,5 +47,5 @@ public class JwtSettings
     /// The default value is 5 minutes.
     /// </remarks>
     [Range(1, int.MaxValue, ErrorMessage = "TokenExpirationTimeInMinutes must be greater than zero.")]
-    [Required] public int TokenExpirationTimeInMinutes { get; set; } = 5;
+    [Required] public int TokenExpirationTimeInMinutes { get; set; } = 60;
 }
