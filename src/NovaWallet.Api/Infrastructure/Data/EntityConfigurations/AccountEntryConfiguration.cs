@@ -11,12 +11,8 @@ namespace NovaWallet.Api.Infrastructure.Data.EntityConfigurations
             builder.ToTable(
                 "AccountEntries",
                 table => table.HasCheckConstraint(
-                    "CHK_AccountEntries_ExclusiveSign",
-                    """
-                ("DebitAmountKobo" > 0 AND "CreditAmountKobo" = 0)
-                OR
-                ("DebitAmountKobo" = 0 AND "CreditAmountKobo" > 0)
-                """));
+                    "CHK_AccountEntries_PositiveAmount",
+                    "\"AmountKobo\" > 0"));
 
             builder.HasKey(a => a.Id);
 
@@ -29,10 +25,12 @@ namespace NovaWallet.Api.Infrastructure.Data.EntityConfigurations
             builder.Property(a => a.AccountId)
                 .IsRequired();
 
-            builder.Property(a => a.DebitAmountKobo)
+            builder.Property(a => a.AmountKobo)
                 .IsRequired();
 
-            builder.Property(a => a.CreditAmountKobo)
+            builder.Property(a => a.EntryType)
+                .HasConversion<string>()
+                .HasMaxLength(20)
                 .IsRequired();
 
             builder.Property(a => a.CreatedAt)

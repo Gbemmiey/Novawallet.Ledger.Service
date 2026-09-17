@@ -206,14 +206,11 @@ CREATE TABLE "AccountEntries" (
     "Id" UUID PRIMARY KEY,
     "JournalEntryId" UUID NOT NULL REFERENCES "JournalEntries"("Id"),
     "AccountId" UUID NOT NULL REFERENCES "Accounts"("Id"),
-    "DebitAmountKobo" BIGINT NOT NULL DEFAULT 0,
-    "CreditAmountKobo" BIGINT NOT NULL DEFAULT 0,
+    "AmountKobo" BIGINT NOT NULL,
+    "EntryType" VARCHAR(20) NOT NULL, -- 'Debit' | 'Credit'
     "CreatedAt" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    -- A line is a debit OR a credit, never both and never neither
-    CONSTRAINT "CHK_AccountEntries_ExclusiveSign" CHECK (
-        ("DebitAmountKobo" > 0 AND "CreditAmountKobo" = 0) OR
-        ("DebitAmountKobo" = 0 AND "CreditAmountKobo" > 0)
-    )
+    -- The amount is always positive; EntryType discriminates the side of the posting
+    CONSTRAINT "CHK_AccountEntries_PositiveAmount" CHECK ("AmountKobo" > 0)
 );
 
 -- Statement query support: paginated, newest-first history per account

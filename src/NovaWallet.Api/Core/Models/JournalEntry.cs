@@ -1,4 +1,6 @@
-﻿namespace NovaWallet.Api.Core.Models
+﻿using NovaWallet.Api.Core.Enums;
+
+namespace NovaWallet.Api.Core.Models
 {
     /// <summary>
     /// Header record for one double-entry posting (a transfer or a deposit
@@ -23,7 +25,9 @@
 
         /// <summary>True once SUM(Debit) == SUM(Credit) across all lines posted so far.
         /// Callers should check this before committing the surrounding DB transaction.</summary>
-        public bool IsBalanced => _lines.Sum(l => l.DebitAmountKobo) == _lines.Sum(l => l.CreditAmountKobo);
+        public bool IsBalanced =>
+            _lines.Where(l => l.EntryType == EntryType.Debit).Sum(l => l.AmountKobo)
+            == _lines.Where(l => l.EntryType == EntryType.Credit).Sum(l => l.AmountKobo);
 
         private JournalEntry(Guid id, string idempotencyKey, string requestPayloadHash, DateTime createdAt)
         {
