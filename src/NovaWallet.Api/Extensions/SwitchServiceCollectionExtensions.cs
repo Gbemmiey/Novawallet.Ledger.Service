@@ -2,10 +2,12 @@
 using FluentValidation.AspNetCore;
 using Microsoft.EntityFrameworkCore;
 using NovaWallet.Api.Application.Services;
+using NovaWallet.Api.Core.Options;
 using NovaWallet.Api.Core.Services;
 using NovaWallet.Api.Infrastructure.Data;
 using NovaWallet.Api.Infrastructure.Http;
 using NovaWallet.Api.Infrastructure.Providers;
+using NovaWallet.Api.Workers;
 using System.Reflection;
 
 namespace NovaWallet.Api.Extensions
@@ -29,6 +31,7 @@ namespace NovaWallet.Api.Extensions
 
         public static IServiceCollection RegisterApplicationOptions(this IServiceCollection services, IConfiguration configuration)
         {
+            services.Configure<DepositConsumerOptions>(configuration.GetSection("DepositConsumer"));
             return services;
         }
 
@@ -38,6 +41,7 @@ namespace NovaWallet.Api.Extensions
             services.AddScoped<IMockUserAuthHelper, MockUserAuthHelper>();
             services.AddScoped<IWalletService, WalletService>();
             services.AddScoped<IDepositService, DepositService>();
+            services.AddHostedService<DepositConsumer>();
             return services;
         }
 

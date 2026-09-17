@@ -51,4 +51,19 @@ public static class NovaWalletConstants
     {
         public const string PartnerOnly = "PartnerOnly";
     }
+
+    /// <summary>
+    /// Well-known chart-of-accounts entries that exist independently of any single
+    /// wallet. Unlike per-user liability accounts (created in <c>WalletService.CreateWallet</c>),
+    /// these are shared, singleton ledger accounts resolved/created lazily by background
+    /// workers on first use (see <c>Workers.DepositConsumer</c>).
+    /// </summary>
+    public static class SystemAccounts
+    {
+        /// <summary>
+        /// Asset account debited for every settled NIP inbound credit; the offsetting
+        /// credit lands on the specific beneficiary wallet's own liability account.
+        /// </summary>
+        public const string NipSettlementAccountNumber = "1000-NIP-SETTLEMENT";
+    }
 }
