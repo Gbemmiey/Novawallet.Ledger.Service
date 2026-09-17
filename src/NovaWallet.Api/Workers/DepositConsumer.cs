@@ -18,8 +18,9 @@ namespace NovaWallet.Api.Workers
     /// <remarks>
     /// This is the consumer half of the inbound NIP deposit flow described in README §2/§8:
     /// the webhook durably records an <see cref="ExternalCreditRequest"/> + <see cref="DepositOutbox"/>
-    /// row and returns HTTP 202 immediately; this worker later locks the beneficiary wallet row,
-    /// credits <see cref="Wallet.AvailableBalanceKobo"/>, posts the double-entry pair
+    /// row and returns HTTP 202 immediately; this worker later atomically credits
+    /// <see cref="Wallet.AvailableBalanceKobo"/> (no application-held wallet row lock - see the
+    /// "Row locking" remarks below), posts the double-entry pair
     /// (Debit <see cref="NovaWalletConstants.SystemAccounts.NipSettlementAccountNumber"/> Asset,
     /// Credit the beneficiary's own liability account), and marks both the outbox row and the
     /// external credit request as settled — all inside a single DB transaction.
@@ -31,11 +32,18 @@ namespace NovaWallet.Api.Workers
     /// reprocessed row a safe no-op rather than a duplicate credit.
     /// </para>
     /// <para>
-    /// <b>Row locking:</b> unlike the hot outbound-transfer debit path (which deliberately avoids
-    /// row locks for throughput — see README §4), this worker takes a real <c>SELECT ... FOR UPDATE</c>
-    /// lock on both the outbox row and the beneficiary wallet row before mutating them. Inbound
-    /// settlement volume is far lower than outbound transfer volume, so correctness/simplicity is
-    /// prioritized here, and the lock is what makes this worker safe to run as more than one instance.
+    /// <b>Row locking:</b> the <c>DepositOutbox</c> row itself is still locked via a real
+    /// <c>SELECT ... FOR UPDATE</c> - that's what makes it safe to run more than one instance of
+    /// this worker (a second instance racing on the same row blocks, then sees it already
+    /// <see cref="OutboxStatus.Processed"/> and no-ops). The beneficiary wallet's balance, however,
+    /// is credited via a single atomic, guarded SQL UPDATE (see <c>TryCreditWalletAtomicAsync</c>)
+    /// with no application-held row lock at all - the same "guarded UPDATE" pattern the hot
+    /// outbound-transfer debit path uses (README §4), applied here too since there is no
+    /// correctness reason to hold a row lock just to add to a balance. The wallet's own
+    /// non-negative-balance CHECK constraint (irrelevant here since this path only credits, never
+    /// debits) and its Active-status guard are both enforced atomically by the UPDATE's WHERE
+    /// clause, so there is no window in which a concurrent writer could observe or act on a stale
+    /// balance.
     /// </para>
     /// <para>
     /// <b>Failure semantics:</b> settlement runs inside an explicit try/catch around the whole
@@ -51,7 +59,11 @@ namespace NovaWallet.Api.Workers
     /// so it's never left stuck at <see cref="DepositStatus.Pending"/> forever. A permanent business
     /// rejection (beneficiary account no longer resolvable, or beneficiary wallet not
     /// <see cref="WalletStatus.Active"/> — see README §7) marks both rows <c>Failed</c> immediately,
-    /// without consuming a retry, since retrying it would never succeed.
+    /// without consuming a retry, since retrying it would never succeed. If the beneficiary
+    /// wallet's atomic credit instead affects zero rows despite an Active status on immediate
+    /// re-read (an anomaly, not a legitimate business rejection - the wallet vanished between
+    /// the beneficiary lookup and the credit statement), that is treated as transient instead,
+    /// so it gets retried rather than silently written off as permanently Failed.
     /// </para>
     /// </remarks>
     public sealed class DepositConsumer : BackgroundService
@@ -217,29 +229,6 @@ namespace NovaWallet.Api.Workers
                         return SettlementOutcome.Handled;
                     }
 
-                    // Real row lock on the wallet being credited (see class remarks). Note this is a
-                    // brand-new, previously-untracked query, so the materialized values are guaranteed
-                    // fresh under the lock - not stale via EF's identity-map reuse of an earlier read.
-                    var wallet = await db.Wallets
-                        .FromSqlInterpolated($"SELECT * FROM \"Wallets\" WHERE \"Id\" = {beneficiary.Id} FOR UPDATE")
-                        .FirstAsync(cancellationToken);
-
-                    if (wallet.Status != WalletStatus.Active)
-                    {
-                        outbox.MarkFailed();
-                        externalCreditRequest.MarkFailed();
-                        await db.SaveChangesAsync(cancellationToken);
-                        await transaction.CommitAsync(cancellationToken);
-
-                        _logger.LogWarning(
-                            "DepositOutbox {DepositOutboxId} failed permanently - beneficiary Wallet {WalletId} is {Status}, not Active. SessionId: {SessionId}",
-                            outbox.Id,
-                            wallet.Id,
-                            wallet.Status,
-                            externalCreditRequest.SessionId);
-                        return SettlementOutcome.Handled;
-                    }
-
                     var settlementAccountId = await EnsureSystemAccountAsync(
                         db, NovaWalletConstants.SystemAccounts.NipSettlementAccountNumber, AccountType.Asset, cancellationToken);
 
@@ -259,19 +248,64 @@ namespace NovaWallet.Api.Workers
                     if (!journalEntry.IsBalanced)
                         throw new InvalidOperationException($"Deposit journal entry for SessionId {externalCreditRequest.SessionId} is not balanced.");
 
-                    var balanceBeforeKobo = wallet.AvailableBalanceKobo;
-                    wallet.Credit(externalCreditRequest.AmountKobo);
+                    // Atomic, guarded credit - no application-held row lock (see class remarks).
+                    // The WHERE clause enforces the wallet is still Active as part of the same
+                    // atomic operation as the balance mutation; a null result means either the
+                    // wallet is legitimately not Active (a real business rejection) or it
+                    // vanished between the beneficiary lookup above and this statement (an
+                    // anomaly, not a business outcome) - the status re-read just below tells
+                    // these apart, the same way TransferService.ResolveCreditFailureAsync does.
+                    var newBalanceKobo = await TryCreditWalletAtomicAsync(
+                        db, beneficiary.Id, externalCreditRequest.AmountKobo, cancellationToken);
+
+                    if (newBalanceKobo is null)
+                    {
+                        var status = await ReadWalletStatusAsync(db, beneficiary.Id, cancellationToken);
+
+                        if (status != WalletStatus.Active)
+                        {
+                            // Legitimate, permanent business rejection - retrying would never
+                            // succeed, so mark both rows Failed immediately without consuming a
+                            // retry attempt.
+                            outbox.MarkFailed();
+                            externalCreditRequest.MarkFailed();
+                            await db.SaveChangesAsync(cancellationToken);
+                            await transaction.CommitAsync(cancellationToken);
+
+                            _logger.LogWarning(
+                                "DepositOutbox {DepositOutboxId} failed permanently - beneficiary Wallet {WalletId} is {Status}, not Active. SessionId: {SessionId}",
+                                outbox.Id,
+                                beneficiary.Id,
+                                status?.ToString() ?? "no longer found",
+                                externalCreditRequest.SessionId);
+                            return SettlementOutcome.Handled;
+                        }
+
+                        // Anomaly: the wallet is Active on this immediate re-read, yet the
+                        // guarded UPDATE affected zero rows. Unlike a genuine business
+                        // rejection, this should never happen in normal operation, so treat it
+                        // as transient rather than silently writing the deposit off as
+                        // permanently Failed - this throws, is caught by the generic handler
+                        // below, rolls back, and routes through RecordFailedAttemptAsync so it
+                        // gets retried (and only becomes permanently Failed after exhausting
+                        // DepositOutbox.MaxRetries, same as any other transient failure).
+                        throw new InvalidOperationException(
+                            $"Credit leg of deposit settlement affected zero rows for Wallet {beneficiary.Id} despite an Active status on immediate re-read. SessionId: {externalCreditRequest.SessionId}");
+                    }
+
+                    var balanceBeforeKobo = newBalanceKobo.Value - externalCreditRequest.AmountKobo;
+                    var balanceAfterKobo = newBalanceKobo.Value;
 
                     externalCreditRequest.MarkCompleted();
                     outbox.MarkProcessed();
 
                     db.JournalEntries.Add(journalEntry);
                     db.AuditLogs.Add(AuditLog.Create(
-                        walletId: wallet.Id,
+                        walletId: beneficiary.Id,
                         actorSubject: "system:nip-inbound",
                         action: "Credit",
                         balanceBeforeKobo: balanceBeforeKobo,
-                        balanceAfterKobo: wallet.AvailableBalanceKobo,
+                        balanceAfterKobo: balanceAfterKobo,
                         correlationId: journalEntry.Id));
 
                     await db.SaveChangesAsync(cancellationToken);
@@ -281,7 +315,7 @@ namespace NovaWallet.Api.Workers
                         "Deposit settled. SessionId: {SessionId}, TransactionReference: {TransactionReference}, WalletId: {WalletId}, AmountKobo: {AmountKobo}, JournalEntryId: {JournalEntryId}",
                         externalCreditRequest.SessionId,
                         externalCreditRequest.TransactionReference,
-                        wallet.Id,
+                        beneficiary.Id,
                         externalCreditRequest.AmountKobo,
                         journalEntry.Id);
 
@@ -396,6 +430,44 @@ namespace NovaWallet.Api.Workers
                         outboxId);
                 }
             });
+        }
+
+        /// <summary>
+        /// Credits a wallet via a single atomic, guarded SQL UPDATE - no row lock is taken by
+        /// the application. The WHERE clause enforces the wallet is still Active as part of the
+        /// same atomic operation (mirrors the guarded UPSERT pattern used for the daily-limit
+        /// check in <c>TransferService</c>, and the intent described in <c>Wallet.cs</c>'s own
+        /// doc comment). Returns null if zero rows were affected (wallet no longer Active, or no
+        /// longer exists) - the caller treats that as a permanent settlement failure.
+        /// </summary>
+        private static async Task<long?> TryCreditWalletAtomicAsync(
+            NovaWalletDbContext db, Guid walletId, long amountKobo, CancellationToken cancellationToken)
+        {
+            var affectedBalances = await db.Database.SqlQuery<long>($@"
+                UPDATE ""Wallets""
+                SET ""AvailableBalanceKobo"" = ""AvailableBalanceKobo"" + {amountKobo}
+                WHERE ""Id"" = {walletId} AND ""Status"" = {(int)WalletStatus.Active}
+                RETURNING ""AvailableBalanceKobo"" AS ""Value""")
+                .ToListAsync(cancellationToken);
+
+            return affectedBalances.Count > 0 ? affectedBalances[0] : null;
+        }
+
+        /// <summary>
+        /// Reads a wallet's current status for error-reporting purposes only. Not authoritative
+        /// on its own - it never decides a failure, it only explains one that
+        /// <see cref="TryCreditWalletAtomicAsync"/> already reported (zero rows affected) by
+        /// distinguishing "not Active" (a real business rejection) from "vanished/never existed"
+        /// (an anomaly). Mirrors <c>TransferService.ReadWalletStatusAsync</c>.
+        /// </summary>
+        private static async Task<WalletStatus?> ReadWalletStatusAsync(
+            NovaWalletDbContext db, Guid walletId, CancellationToken cancellationToken)
+        {
+            return await db.Wallets
+                .AsNoTracking()
+                .Where(w => w.Id == walletId)
+                .Select(w => (WalletStatus?)w.Status)
+                .FirstOrDefaultAsync(cancellationToken);
         }
 
         /// <summary>

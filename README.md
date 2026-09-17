@@ -14,7 +14,7 @@ A high-concurrency, double-entry wallet ledger service built for **FirstBank Nov
 ### 2. Inbound NIP Deposit Architecture (Asynchronous Clearing)
 Inbound NIP deposits arrive via API callbacks from NIBSS rails carrying a 30-digit `SessionId`.
 * **Instant API Acknowledgment:** To prevent NIP timeout errors, the webhook validates the beneficiary account, records the raw `ExternalCreditRequest`, enqueues a `DepositOutbox` event, and returns HTTP 202 immediately.
-* **Idempotent Inflow Processing:** The `DepositConsumer` picks up the outbox message, locks the beneficiary wallet row, credits `AvailableBalanceKobo`, posts the double-entry ledger pair (Debiting `1000-NIP-SETTLEMENT` Asset, Crediting `2100-USER-WALLET` Liability), and marks the NIP Session ID as settled in a single atomic transaction.
+* **Idempotent Inflow Processing:** The `DepositConsumer` picks up the outbox message (locking only the `DepositOutbox` row itself, to dedupe across worker instances), credits `AvailableBalanceKobo` via a single atomic, guarded SQL `UPDATE` with no application-held wallet row lock (see §4), posts the double-entry ledger pair (Debiting `1000-NIP-SETTLEMENT` Asset, Crediting `2100-USER-WALLET` Liability), and marks the NIP Session ID as settled in a single atomic transaction.
 
 ### 3. Separation of Concerns: Product vs. Ledger Domain
 * **`Wallet` (Product Domain):** Holds mutable state (`AvailableBalanceKobo`), wallet status, and user-facing attributes. Features an $O(1)$ fast-access balance guard against overdrafts.

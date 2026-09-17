@@ -171,7 +171,7 @@ public sealed class TransferService : ITransferService
         var wallets = await _dbContext.Wallets
             .AsNoTracking()
             .Where(w => w.Id == sourceWalletId || w.Id == destinationWalletId)
-            .Select(w => new { w.Id, w.UserId, w.Status, w.Currency, AccountNumber = w.Account!.AccountNumber })
+            .Select(w => new { w.Id, w.UserId, w.Status, w.Currency, w.AccountId, AccountNumber = w.Account!.AccountNumber })
             .ToListAsync(cancellationToken);
 
         var sourceWallet = wallets.FirstOrDefault(w => w.Id == sourceWalletId);
@@ -217,37 +217,29 @@ public sealed class TransferService : ITransferService
 
             try
             {
-                // Deadlock prevention: always lock in ascending Guid order (README §4),
-                // regardless of which side is source vs. destination for this request.
-                var (firstId, secondId) = sourceWalletId.CompareTo(destinationWalletId) <= 0
-                    ? (sourceWalletId, destinationWalletId)
-                    : (destinationWalletId, sourceWalletId);
-
-                var firstLocked = await LockWalletAsync(firstId, cancellationToken);
-                var secondLocked = await LockWalletAsync(secondId, cancellationToken);
-
-                var lockedSource = firstLocked.Id == sourceWalletId ? firstLocked : secondLocked;
-                var lockedDestination = firstLocked.Id == destinationWalletId ? firstLocked : secondLocked;
-
-                // Destination status is checked the same as source - a frozen/closed
-                // wallet rejects inbound credits the same way it rejects outbound debits
-                // (README §7).
-                if (lockedSource.Status != WalletStatus.Active)
+                // Fast preliminary check using the pre-transaction, unlocked snapshot taken
+                // above - not authoritative under concurrency, just fails fast so an obviously
+                // frozen/closed wallet doesn't waste a write on the daily-usage UPSERT below.
+                // The atomic, guarded UPDATEs further down are what actually enforce this
+                // (README §7 - destination status is checked the same as source, since a
+                // frozen/closed wallet rejects inbound credits the same way it rejects
+                // outbound debits).
+                if (sourceWallet.Status != WalletStatus.Active)
                 {
                     await transaction.RollbackAsync(CancellationToken.None);
 
                     return ServiceApiResponse<WalletTransferResponse>.CreateFailure(
                         ResponseCodes.RequestNotAllowed.ResponseCode,
-                        $"Source wallet is {lockedSource.Status} and cannot originate transfers.");
+                        $"Source wallet is {sourceWallet.Status} and cannot originate transfers.");
                 }
 
-                if (lockedDestination.Status != WalletStatus.Active)
+                if (destinationWallet.Status != WalletStatus.Active)
                 {
                     await transaction.RollbackAsync(CancellationToken.None);
 
                     return ServiceApiResponse<WalletTransferResponse>.CreateFailure(
                         ResponseCodes.RequestNotAllowed.ResponseCode,
-                        $"Destination wallet is {lockedDestination.Status} and cannot receive transfers.");
+                        $"Destination wallet is {destinationWallet.Status} and cannot receive transfers.");
                 }
 
                 // Atomic, guarded daily-usage UPSERT (README §6). The INSERT branch is
@@ -256,7 +248,7 @@ public sealed class TransferService : ITransferService
                 // to WAT explicitly rather than following the DB session's timezone default.
                 var dailyUsageRowsAffected = await _dbContext.Database.ExecuteSqlInterpolatedAsync($@"
                     INSERT INTO ""WalletDailyUsage"" (""WalletId"", ""UsageDate"", ""TotalSpentKobo"")
-                    SELECT {lockedSource.Id}, (CURRENT_TIMESTAMP AT TIME ZONE 'Africa/Lagos')::DATE, {request.AmountInKobo}
+                    SELECT {sourceWalletId}, (CURRENT_TIMESTAMP AT TIME ZONE 'Africa/Lagos')::DATE, {request.AmountInKobo}
                     WHERE {request.AmountInKobo} <= {NovaWalletConstants.TransferLimits.DailyOutboundLimitKobo}
                     ON CONFLICT (""WalletId"", ""UsageDate"")
                     DO UPDATE SET
@@ -270,36 +262,81 @@ public sealed class TransferService : ITransferService
 
                     _logger.LogWarning(
                         "Transfer rejected - daily outbound limit exceeded for Wallet {SourceWalletId}. AmountKobo: {AmountKobo}",
-                        lockedSource.Id,
+                        sourceWalletId,
                         request.AmountInKobo);
 
                     return ServiceApiResponse<WalletTransferResponse>.CreateFailure(ResponseCodes.DailyLimitExceeded);
                 }
 
-                var sourceBalanceBeforeKobo = lockedSource.AvailableBalanceKobo;
-                var destinationBalanceBeforeKobo = lockedDestination.AvailableBalanceKobo;
+                // Atomic, guarded wallet mutations - no application-held row lock is taken for
+                // either wallet (README §4's documented intent for hot balance mutations,
+                // applied to both sides of a transfer here). Each UPDATE's WHERE clause
+                // enforces Active status - and, for the debit, sufficient balance too - as part
+                // of the same atomic operation as the mutation itself, so there is no window in
+                // which a concurrent transaction could observe or act on a stale balance. The
+                // DB's own CHK_Wallet_AvailableBalanceKobo_NonNegative constraint remains the
+                // absolute, non-bypassable backstop against a negative balance (see the
+                // check-violation catch below) regardless of this guard's correctness.
+                //
+                // Deadlock prevention: the two UPDATEs still run in ascending-Guid order
+                // (README §4) even though there is no explicit FOR UPDATE anymore - a plain
+                // UPDATE still takes an implicit row lock for the rest of the transaction, so
+                // two transfers moving funds in opposite directions between the same wallet
+                // pair could otherwise deadlock against each other.
+                var sourceRunsFirst = sourceWalletId.CompareTo(destinationWalletId) <= 0;
 
-                try
+                long? sourceNewBalanceKobo;
+                long? destinationNewBalanceKobo;
+
+                if (sourceRunsFirst)
                 {
-                    lockedSource.Debit(request.AmountInKobo);
+                    sourceNewBalanceKobo = await TryDebitWalletAtomicAsync(sourceWalletId, request.AmountInKobo, cancellationToken);
+
+                    if (sourceNewBalanceKobo is null)
+                    {
+                        await transaction.RollbackAsync(CancellationToken.None);
+                        return await ResolveDebitFailureAsync(sourceWalletId, cancellationToken);
+                    }
+
+                    destinationNewBalanceKobo = await TryCreditWalletAtomicAsync(destinationWalletId, request.AmountInKobo, cancellationToken);
+
+                    if (destinationNewBalanceKobo is null)
+                    {
+                        await transaction.RollbackAsync(CancellationToken.None);
+                        return await ResolveCreditFailureAsync(destinationWalletId, cancellationToken);
+                    }
                 }
-                catch (InvalidOperationException)
+                else
                 {
-                    // Status was already re-validated as Active above under the row
-                    // lock, so this can only be an insufficient-balance rejection.
-                    await transaction.RollbackAsync(CancellationToken.None);
-                    return ServiceApiResponse<WalletTransferResponse>.CreateFailure(ResponseCodes.InsufficientBalance);
+                    destinationNewBalanceKobo = await TryCreditWalletAtomicAsync(destinationWalletId, request.AmountInKobo, cancellationToken);
+
+                    if (destinationNewBalanceKobo is null)
+                    {
+                        await transaction.RollbackAsync(CancellationToken.None);
+                        return await ResolveCreditFailureAsync(destinationWalletId, cancellationToken);
+                    }
+
+                    sourceNewBalanceKobo = await TryDebitWalletAtomicAsync(sourceWalletId, request.AmountInKobo, cancellationToken);
+
+                    if (sourceNewBalanceKobo is null)
+                    {
+                        await transaction.RollbackAsync(CancellationToken.None);
+                        return await ResolveDebitFailureAsync(sourceWalletId, cancellationToken);
+                    }
                 }
 
-                lockedDestination.Credit(request.AmountInKobo);
+                var sourceBalanceBeforeKobo = sourceNewBalanceKobo.Value + request.AmountInKobo;
+                var sourceBalanceAfterKobo = sourceNewBalanceKobo.Value;
+                var destinationBalanceBeforeKobo = destinationNewBalanceKobo.Value - request.AmountInKobo;
+                var destinationBalanceAfterKobo = destinationNewBalanceKobo.Value;
 
                 var journalEntry = JournalEntry.Create(idempotencyKey, requestPayloadHash);
                 journalEntry.AddDebitLine(
-                    lockedSource.AccountId,
+                    sourceWallet.AccountId,
                     request.AmountInKobo,
                     ComposeParticulars($"Transfer to {destinationWallet.AccountNumber}", request.Narration));
                 journalEntry.AddCreditLine(
-                    lockedDestination.AccountId,
+                    destinationWallet.AccountId,
                     request.AmountInKobo,
                     ComposeParticulars($"Transfer from {sourceWallet.AccountNumber}", request.Narration));
 
@@ -319,8 +356,8 @@ public sealed class TransferService : ITransferService
                 // surfaces it to callers).
                 var walletTransfer = WalletTransfer.Create(
                     journalEntryId: journalEntry.Id,
-                    sourceWalletId: lockedSource.Id,
-                    destinationWalletId: lockedDestination.Id,
+                    sourceWalletId: sourceWalletId,
+                    destinationWalletId: destinationWalletId,
                     amountKobo: request.AmountInKobo,
                     narration: request.Narration,
                     transactionDate: journalEntry.CreatedAt);
@@ -329,18 +366,18 @@ public sealed class TransferService : ITransferService
                 _dbContext.TransferOutboxEntries.Add(transferOutbox);
                 _dbContext.WalletTransfers.Add(walletTransfer);
                 _dbContext.AuditLogs.Add(AuditLog.Create(
-                    walletId: lockedSource.Id,
+                    walletId: sourceWalletId,
                     actorSubject: actorSubject,
                     action: "Debit",
                     balanceBeforeKobo: sourceBalanceBeforeKobo,
-                    balanceAfterKobo: lockedSource.AvailableBalanceKobo,
+                    balanceAfterKobo: sourceBalanceAfterKobo,
                     correlationId: journalEntry.Id));
                 _dbContext.AuditLogs.Add(AuditLog.Create(
-                    walletId: lockedDestination.Id,
+                    walletId: destinationWalletId,
                     actorSubject: actorSubject,
                     action: "Credit",
                     balanceBeforeKobo: destinationBalanceBeforeKobo,
-                    balanceAfterKobo: lockedDestination.AvailableBalanceKobo,
+                    balanceAfterKobo: destinationBalanceAfterKobo,
                     correlationId: journalEntry.Id));
 
                 await _dbContext.SaveChangesAsync(cancellationToken);
@@ -349,8 +386,8 @@ public sealed class TransferService : ITransferService
                 _logger.LogInformation(
                     "Transfer settled. IdempotencyKey: {IdempotencyKey}, SourceWalletId: {SourceWalletId}, DestinationWalletId: {DestinationWalletId}, AmountKobo: {AmountKobo}, JournalEntryId: {JournalEntryId}",
                     idempotencyKey,
-                    lockedSource.Id,
-                    lockedDestination.Id,
+                    sourceWalletId,
+                    destinationWalletId,
                     request.AmountInKobo,
                     journalEntry.Id);
 
@@ -400,6 +437,24 @@ public sealed class TransferService : ITransferService
 
                 return ServiceApiResponse<WalletTransferResponse>.SystemMalFunctioned();
             }
+            catch (Exception ex) when (IsCheckViolation(ex))
+            {
+                // Defense-in-depth: the WHERE-clause guards in TryDebitWalletAtomicAsync/
+                // TryCreditWalletAtomicAsync should make this unreachable, but the DB CHECK
+                // constraint (CHK_Wallet_AvailableBalanceKobo_NonNegative) is the
+                // non-negotiable backstop that can never be bypassed regardless of
+                // application-code correctness. If it ever fires, report it as
+                // InsufficientBalance rather than an opaque SystemMalFunctioned.
+                await transaction.RollbackAsync(CancellationToken.None);
+
+                _logger.LogError(
+                    ex,
+                    "Wallet balance mutation tripped the DB-level non-negative-balance CHECK constraint despite the WHERE guard. Investigate the guard logic. SourceWalletId: {SourceWalletId}, DestinationWalletId: {DestinationWalletId}",
+                    sourceWalletId,
+                    destinationWalletId);
+
+                return ServiceApiResponse<WalletTransferResponse>.CreateFailure(ResponseCodes.InsufficientBalance);
+            }
             catch (Exception ex)
             {
                 await transaction.RollbackAsync(CancellationToken.None);
@@ -417,18 +472,99 @@ public sealed class TransferService : ITransferService
     }
 
     /// <summary>
-    /// Takes a real <c>SELECT ... FOR UPDATE</c> lock on the given wallet row. Callers
-    /// must invoke this for both sides of a transfer in ascending-Guid order (README §4)
-    /// to prevent deadlocks between two transfers moving funds in opposite directions
-    /// between the same pair of wallets. Deliberately not <c>AsNoTracking</c>: the
-    /// returned entity is mutated in-process via <see cref="Wallet.Debit"/>/<see cref="Wallet.Credit"/>
-    /// and persisted by the caller's subsequent <c>SaveChangesAsync</c>.
+    /// Debits a wallet via a single atomic, guarded SQL UPDATE - no row lock is taken
+    /// ahead of time by the application. The WHERE clause enforces both Active status and
+    /// sufficient balance as part of the same atomic operation as the mutation itself.
+    /// Returns null if zero rows were affected (status/balance guard failed, or the wallet
+    /// no longer exists); the caller distinguishes which via <see cref="ResolveDebitFailureAsync"/>.
     /// </summary>
-    private async Task<Wallet> LockWalletAsync(Guid walletId, CancellationToken cancellationToken)
+    private async Task<long?> TryDebitWalletAtomicAsync(Guid walletId, long amountKobo, CancellationToken cancellationToken)
+    {
+        var affectedBalances = await _dbContext.Database.SqlQuery<long>($@"
+            UPDATE ""Wallets""
+            SET ""AvailableBalanceKobo"" = ""AvailableBalanceKobo"" - {amountKobo}
+            WHERE ""Id"" = {walletId} AND ""Status"" = {(int)WalletStatus.Active} AND ""AvailableBalanceKobo"" >= {amountKobo}
+            RETURNING ""AvailableBalanceKobo"" AS ""Value""")
+            .ToListAsync(cancellationToken);
+
+        return affectedBalances.Count > 0 ? affectedBalances[0] : null;
+    }
+
+    /// <summary>
+    /// Credits a wallet via a single atomic, guarded SQL UPDATE - no row lock is taken
+    /// ahead of time by the application. The WHERE clause enforces Active status as part
+    /// of the same atomic operation as the mutation itself. Returns null if zero rows were
+    /// affected (status guard failed, or the wallet no longer exists); the caller
+    /// distinguishes which via <see cref="ResolveCreditFailureAsync"/>.
+    /// </summary>
+    private async Task<long?> TryCreditWalletAtomicAsync(Guid walletId, long amountKobo, CancellationToken cancellationToken)
+    {
+        var affectedBalances = await _dbContext.Database.SqlQuery<long>($@"
+            UPDATE ""Wallets""
+            SET ""AvailableBalanceKobo"" = ""AvailableBalanceKobo"" + {amountKobo}
+            WHERE ""Id"" = {walletId} AND ""Status"" = {(int)WalletStatus.Active}
+            RETURNING ""AvailableBalanceKobo"" AS ""Value""")
+            .ToListAsync(cancellationToken);
+
+        return affectedBalances.Count > 0 ? affectedBalances[0] : null;
+    }
+
+    /// <summary>
+    /// Reads a wallet's current status for error-reporting purposes only. Not authoritative
+    /// on its own - it never decides a failure, it only explains one that a guarded atomic
+    /// UPDATE already reported (zero rows affected) by distinguishing "not Active" from
+    /// "vanished/never existed".
+    /// </summary>
+    private async Task<WalletStatus?> ReadWalletStatusAsync(Guid walletId, CancellationToken cancellationToken)
     {
         return await _dbContext.Wallets
-            .FromSqlInterpolated($"SELECT * FROM \"Wallets\" WHERE \"Id\" = {walletId} FOR UPDATE")
-            .FirstAsync(cancellationToken);
+            .AsNoTracking()
+            .Where(w => w.Id == walletId)
+            .Select(w => (WalletStatus?)w.Status)
+            .FirstOrDefaultAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Explains a zero-row result from <see cref="TryDebitWalletAtomicAsync"/>: distinguishes
+    /// "source wallet is no longer Active" from "insufficient balance" (status was Active on
+    /// this immediate re-read, so the guard's balance condition must be what failed).
+    /// </summary>
+    private async Task<ServiceApiResponse<WalletTransferResponse>> ResolveDebitFailureAsync(Guid sourceWalletId, CancellationToken cancellationToken)
+    {
+        var status = await ReadWalletStatusAsync(sourceWalletId, cancellationToken);
+
+        if (status != WalletStatus.Active)
+        {
+            return ServiceApiResponse<WalletTransferResponse>.CreateFailure(
+                ResponseCodes.RequestNotAllowed.ResponseCode,
+                $"Source wallet is {(status?.ToString() ?? "no longer found")} and cannot originate transfers.");
+        }
+
+        return ServiceApiResponse<WalletTransferResponse>.CreateFailure(ResponseCodes.InsufficientBalance);
+    }
+
+    /// <summary>
+    /// Explains a zero-row result from <see cref="TryCreditWalletAtomicAsync"/>: the guard is
+    /// Active-only (no balance condition), so a zero-row result with an Active status on this
+    /// immediate re-read means the wallet vanished between the pre-transaction snapshot and
+    /// this point - a race outside normal operation, logged and reported as a system failure.
+    /// </summary>
+    private async Task<ServiceApiResponse<WalletTransferResponse>> ResolveCreditFailureAsync(Guid destinationWalletId, CancellationToken cancellationToken)
+    {
+        var status = await ReadWalletStatusAsync(destinationWalletId, cancellationToken);
+
+        if (status != WalletStatus.Active)
+        {
+            return ServiceApiResponse<WalletTransferResponse>.CreateFailure(
+                ResponseCodes.RequestNotAllowed.ResponseCode,
+                $"Destination wallet is {(status?.ToString() ?? "no longer found")} and cannot receive transfers.");
+        }
+
+        _logger.LogError(
+            "Credit leg of a transfer affected zero rows for Wallet {DestinationWalletId} despite an Active status on immediate re-read.",
+            destinationWalletId);
+
+        return ServiceApiResponse<WalletTransferResponse>.SystemMalFunctioned();
     }
 
     /// <summary>
@@ -557,5 +693,20 @@ public sealed class TransferService : ITransferService
     private static bool IsUniqueViolation(DbUpdateException ex)
     {
         return ex.InnerException is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation };
+    }
+
+    /// <summary>
+    /// True if the given exception is (or wraps) a Postgres CHECK-constraint violation - e.g.
+    /// <c>CHK_Wallet_AvailableBalanceKobo_NonNegative</c> firing as the last-resort backstop
+    /// against a negative balance, should the guarded atomic UPDATE's WHERE clause ever fail
+    /// to catch it first. Unlike <see cref="IsUniqueViolation"/>, this isn't limited to
+    /// <see cref="DbUpdateException"/> since <c>Database.SqlQuery</c> raw-SQL calls (used by
+    /// <see cref="TryDebitWalletAtomicAsync"/>/<see cref="TryCreditWalletAtomicAsync"/>) surface
+    /// Postgres errors directly rather than wrapped in a SaveChanges-specific exception type.
+    /// </summary>
+    private static bool IsCheckViolation(Exception ex)
+    {
+        return ex is PostgresException { SqlState: PostgresErrorCodes.CheckViolation }
+            || ex.InnerException is PostgresException { SqlState: PostgresErrorCodes.CheckViolation };
     }
 }
