@@ -22,8 +22,14 @@ namespace NovaWallet.Api.Infrastructure.Data.EntityConfigurations
                 .HasDefaultValue(OutboxStatus.Pending)
                 .IsRequired();
 
+            builder.Property(d => d.NumberOfRetries)
+                .HasDefaultValue(0)
+                .IsRequired();
+
             builder.Property(d => d.CreatedAt)
                 .IsRequired();
+
+            builder.Property(d => d.DateProcessed);
 
             builder.HasOne(d => d.ExternalCreditRequest)
                 .WithMany(x => x.OutboxEntries)

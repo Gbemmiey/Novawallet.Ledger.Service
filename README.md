@@ -173,8 +173,10 @@ CREATE TABLE "ExternalCreditRequests" (
     "BeneficiaryAccountNumber" VARCHAR(32) NOT NULL,
     "OriginatingAccountNumber" VARCHAR(32) NOT NULL,
     "OriginatingBankCode" VARCHAR(10) NOT NULL,
-    "IsProcessed" BOOLEAN NOT NULL DEFAULT FALSE,
-    "CreatedAt" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+    "Status" VARCHAR(20) NOT NULL DEFAULT 'Pending', -- Pending, Completed, Failed
+    "CreatedAt" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "DateModified" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "CompletedDate" TIMESTAMPTZ -- set only when Status transitions to Completed
 );
 
 -- Deposit Outbox for Asynchronous Processing
@@ -182,7 +184,9 @@ CREATE TABLE "DepositOutbox" (
     "Id" UUID PRIMARY KEY,
     "ExternalCreditRequestId" UUID NOT NULL REFERENCES "ExternalCreditRequests"("Id"),
     "Status" VARCHAR(20) NOT NULL DEFAULT 'Pending', -- Pending, Processed, Failed
-    "CreatedAt" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+    "NumberOfRetries" INT NOT NULL DEFAULT 0, -- transient-failure attempts; capped at 3, then Status -> Failed
+    "CreatedAt" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "DateProcessed" TIMESTAMPTZ -- set once the row reaches a terminal state (Processed or Failed)
 );
 
 -- Transfer Outbox for Asynchronous Notification / Event Publishing
@@ -250,8 +254,10 @@ CREATE TABLE "WalletTransfers" (
     "DestinationWalletId" UUID NOT NULL REFERENCES "Wallets"("Id"),
     "AmountKobo" BIGINT NOT NULL,
     "Narration" VARCHAR(200),
-    "PaymentReference" VARCHAR(64) UNIQUE NOT NULL, -- currently JournalEntries.Id.ToString()
+    "PaymentReference" VARCHAR(64) UNIQUE NOT NULL, -- independently system-generated UUID v7, decoupled from JournalEntryId
+    "Status" VARCHAR(20) NOT NULL DEFAULT 'Completed', -- Completed, Reversed, Failed
     "TransactionDate" TIMESTAMPTZ NOT NULL,
+    "DateModified" TIMESTAMPTZ NOT NULL,
     CONSTRAINT "CHK_WalletTransfers_AmountPositive" CHECK ("AmountKobo" > 0)
 );
 

@@ -26,7 +26,7 @@ namespace NovaWallet.Api.Workers
     ///
     /// <para>
     /// <b>Delivery guarantee:</b> at-least-once delivery, exactly-once effect (README §8). A crash
-    /// between commit and the next poll simply means the row is revisited; <c>ExternalCreditRequests.IsProcessed</c>
+    /// between commit and the next poll simply means the row is revisited; <c>ExternalCreditRequests.Status</c>
     /// and the <c>JournalEntries.IdempotencyKey</c> unique index (keyed off the NIP <c>SessionId</c>) make a
     /// reprocessed row a safe no-op rather than a duplicate credit.
     /// </para>
@@ -38,11 +38,20 @@ namespace NovaWallet.Api.Workers
     /// prioritized here, and the lock is what makes this worker safe to run as more than one instance.
     /// </para>
     /// <para>
-    /// <b>Failure semantics:</b> a transient/unexpected failure leaves the outbox row
-    /// <see cref="OutboxStatus.Pending"/> so the next poll cycle retries it. A permanent business
+    /// <b>Failure semantics:</b> settlement runs inside an explicit try/catch around the whole
+    /// transaction (mirroring <c>TransferService.ProcessTransferAsync</c>'s atomicity), so a
+    /// transient/unexpected failure always rolls back cleanly rather than relying on implicit
+    /// dispose-rollback. A transient failure then records an attempt via
+    /// <see cref="DepositOutbox.RecordFailedAttempt"/> (in a fresh transaction, since the
+    /// settlement transaction itself was rolled back) and leaves the row
+    /// <see cref="OutboxStatus.Pending"/> for the next poll cycle to retry — up to
+    /// <see cref="DepositOutbox.MaxRetries"/> times, after which the row is marked
+    /// <see cref="OutboxStatus.Failed"/> permanently and the cascading failure is also applied to
+    /// the linked <see cref="ExternalCreditRequest"/> (via <see cref="ExternalCreditRequest.MarkFailed"/>)
+    /// so it's never left stuck at <see cref="DepositStatus.Pending"/> forever. A permanent business
     /// rejection (beneficiary account no longer resolvable, or beneficiary wallet not
-    /// <see cref="WalletStatus.Active"/> — see README §7) marks the row <see cref="OutboxStatus.Failed"/>
-    /// instead, since retrying it would never succeed.
+    /// <see cref="WalletStatus.Active"/> — see README §7) marks both rows <c>Failed</c> immediately,
+    /// without consuming a retry, since retrying it would never succeed.
     /// </para>
     /// </remarks>
     public sealed class DepositConsumer : BackgroundService
@@ -136,125 +145,135 @@ namespace NovaWallet.Api.Workers
             }
         }
 
+        /// <summary>Outcome of a single settlement attempt, reported back to the caller so it
+        /// knows whether to invoke <see cref="RecordFailedAttemptAsync"/>.</summary>
+        private enum SettlementOutcome
+        {
+            Handled,
+            TransientFailure
+        }
+
         private async Task ProcessOutboxEntryAsync(NovaWalletDbContext db, Guid outboxId, CancellationToken cancellationToken)
         {
             var strategy = db.Database.CreateExecutionStrategy();
 
-            await strategy.ExecuteAsync(async () =>
+            var outcome = await strategy.ExecuteAsync(async () =>
             {
                 await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
 
-                // Lock the outbox row first. If another instance of this worker is already
-                // settling the same row, this blocks until that transaction commits, then the
-                // re-check below sees Status == Processed and exits as a safe no-op.
-                var outbox = await db.DepositOutboxEntries
-                    .FromSqlInterpolated($"SELECT * FROM \"DepositOutbox\" WHERE \"Id\" = {outboxId} FOR UPDATE")
-                    .FirstOrDefaultAsync(cancellationToken);
-
-                if (outbox is null || outbox.Status != OutboxStatus.Pending)
-                {
-                    await transaction.RollbackAsync(CancellationToken.None);
-                    return;
-                }
-
-                var externalCreditRequest = await db.ExternalCreditRequests
-                    .FirstAsync(x => x.Id == outbox.ExternalCreditRequestId, cancellationToken);
-
-                if (externalCreditRequest.IsProcessed)
-                {
-                    // Already settled by an earlier run; the outbox row just never got marked.
-                    // Self-heal rather than re-post a duplicate journal entry.
-                    outbox.MarkProcessed();
-                    await db.SaveChangesAsync(cancellationToken);
-                    await transaction.CommitAsync(cancellationToken);
-
-                    _logger.LogInformation(
-                        "DepositOutbox {DepositOutboxId} pointed at an already-processed ExternalCreditRequest {SessionId}. Marked Processed without reposting.",
-                        outbox.Id,
-                        externalCreditRequest.SessionId);
-                    return;
-                }
-
-                var beneficiary = await db.Wallets
-                    .AsNoTracking()
-                    .Where(w => w.Account!.AccountNumber == externalCreditRequest.BeneficiaryAccountNumber
-                        && w.Account.AccountType == AccountType.Liability
-                        && w.Account.Currency == NovaWalletConstants.CurrencyCode)
-                    .Select(w => new { w.Id, w.AccountId })
-                    .FirstOrDefaultAsync(cancellationToken);
-
-                if (beneficiary is null)
-                {
-                    outbox.MarkFailed();
-                    await db.SaveChangesAsync(cancellationToken);
-                    await transaction.CommitAsync(cancellationToken);
-
-                    _logger.LogError(
-                        "DepositOutbox {DepositOutboxId} failed permanently - no liability account found for BeneficiaryAccountNumber {BeneficiaryAccountNumber}. SessionId: {SessionId}",
-                        outbox.Id,
-                        externalCreditRequest.BeneficiaryAccountNumber,
-                        externalCreditRequest.SessionId);
-                    return;
-                }
-
-                // Real row lock on the wallet being credited (see class remarks). Note this is a
-                // brand-new, previously-untracked query, so the materialized values are guaranteed
-                // fresh under the lock - not stale via EF's identity-map reuse of an earlier read.
-                var wallet = await db.Wallets
-                    .FromSqlInterpolated($"SELECT * FROM \"Wallets\" WHERE \"Id\" = {beneficiary.Id} FOR UPDATE")
-                    .FirstAsync(cancellationToken);
-
-                if (wallet.Status != WalletStatus.Active)
-                {
-                    outbox.MarkFailed();
-                    await db.SaveChangesAsync(cancellationToken);
-                    await transaction.CommitAsync(cancellationToken);
-
-                    _logger.LogWarning(
-                        "DepositOutbox {DepositOutboxId} failed permanently - beneficiary Wallet {WalletId} is {Status}, not Active. SessionId: {SessionId}",
-                        outbox.Id,
-                        wallet.Id,
-                        wallet.Status,
-                        externalCreditRequest.SessionId);
-                    return;
-                }
-
-                var settlementAccountId = await EnsureSystemAccountAsync(
-                    db, NovaWalletConstants.SystemAccounts.NipSettlementAccountNumber, AccountType.Asset, cancellationToken);
-
-                var journalEntry = JournalEntry.Create(
-                    idempotencyKey: BuildDepositIdempotencyKey(externalCreditRequest.SessionId),
-                    requestPayloadHash: ComputeRequestPayloadHash(externalCreditRequest));
-
-                journalEntry.AddDebitLine(
-                    settlementAccountId,
-                    externalCreditRequest.AmountKobo,
-                    $"NIP settlement - SessionId {externalCreditRequest.SessionId}");
-                journalEntry.AddCreditLine(
-                    beneficiary.AccountId,
-                    externalCreditRequest.AmountKobo,
-                    $"NIP credit from {externalCreditRequest.OriginatingAccountNumber} - Ref {externalCreditRequest.TransactionReference}");
-
-                if (!journalEntry.IsBalanced)
-                    throw new InvalidOperationException($"Deposit journal entry for SessionId {externalCreditRequest.SessionId} is not balanced.");
-
-                var balanceBeforeKobo = wallet.AvailableBalanceKobo;
-                wallet.Credit(externalCreditRequest.AmountKobo);
-
-                externalCreditRequest.MarkProcessed();
-                outbox.MarkProcessed();
-
-                db.JournalEntries.Add(journalEntry);
-                db.AuditLogs.Add(AuditLog.Create(
-                    walletId: wallet.Id,
-                    actorSubject: "system:nip-inbound",
-                    action: "Credit",
-                    balanceBeforeKobo: balanceBeforeKobo,
-                    balanceAfterKobo: wallet.AvailableBalanceKobo,
-                    correlationId: journalEntry.Id));
-
                 try
                 {
+                    // Lock the outbox row first. If another instance of this worker is already
+                    // settling the same row, this blocks until that transaction commits, then the
+                    // re-check below sees Status == Processed and exits as a safe no-op.
+                    var outbox = await db.DepositOutboxEntries
+                        .FromSqlInterpolated($"SELECT * FROM \"DepositOutbox\" WHERE \"Id\" = {outboxId} FOR UPDATE")
+                        .FirstOrDefaultAsync(cancellationToken);
+
+                    if (outbox is null || outbox.Status != OutboxStatus.Pending)
+                    {
+                        await transaction.RollbackAsync(CancellationToken.None);
+                        return SettlementOutcome.Handled;
+                    }
+
+                    var externalCreditRequest = await db.ExternalCreditRequests
+                        .FirstAsync(x => x.Id == outbox.ExternalCreditRequestId, cancellationToken);
+
+                    if (externalCreditRequest.Status == DepositStatus.Completed)
+                    {
+                        // Already settled by an earlier run; the outbox row just never got marked.
+                        // Self-heal rather than re-post a duplicate journal entry.
+                        outbox.MarkProcessed();
+                        await db.SaveChangesAsync(cancellationToken);
+                        await transaction.CommitAsync(cancellationToken);
+
+                        _logger.LogInformation(
+                            "DepositOutbox {DepositOutboxId} pointed at an already-completed ExternalCreditRequest {SessionId}. Marked Processed without reposting.",
+                            outbox.Id,
+                            externalCreditRequest.SessionId);
+                        return SettlementOutcome.Handled;
+                    }
+
+                    var beneficiary = await db.Wallets
+                        .AsNoTracking()
+                        .Where(w => w.Account!.AccountNumber == externalCreditRequest.BeneficiaryAccountNumber
+                            && w.Account.AccountType == AccountType.Liability
+                            && w.Account.Currency == NovaWalletConstants.CurrencyCode)
+                        .Select(w => new { w.Id, w.AccountId })
+                        .FirstOrDefaultAsync(cancellationToken);
+
+                    if (beneficiary is null)
+                    {
+                        outbox.MarkFailed();
+                        externalCreditRequest.MarkFailed();
+                        await db.SaveChangesAsync(cancellationToken);
+                        await transaction.CommitAsync(cancellationToken);
+
+                        _logger.LogError(
+                            "DepositOutbox {DepositOutboxId} failed permanently - no liability account found for BeneficiaryAccountNumber {BeneficiaryAccountNumber}. SessionId: {SessionId}",
+                            outbox.Id,
+                            externalCreditRequest.BeneficiaryAccountNumber,
+                            externalCreditRequest.SessionId);
+                        return SettlementOutcome.Handled;
+                    }
+
+                    // Real row lock on the wallet being credited (see class remarks). Note this is a
+                    // brand-new, previously-untracked query, so the materialized values are guaranteed
+                    // fresh under the lock - not stale via EF's identity-map reuse of an earlier read.
+                    var wallet = await db.Wallets
+                        .FromSqlInterpolated($"SELECT * FROM \"Wallets\" WHERE \"Id\" = {beneficiary.Id} FOR UPDATE")
+                        .FirstAsync(cancellationToken);
+
+                    if (wallet.Status != WalletStatus.Active)
+                    {
+                        outbox.MarkFailed();
+                        externalCreditRequest.MarkFailed();
+                        await db.SaveChangesAsync(cancellationToken);
+                        await transaction.CommitAsync(cancellationToken);
+
+                        _logger.LogWarning(
+                            "DepositOutbox {DepositOutboxId} failed permanently - beneficiary Wallet {WalletId} is {Status}, not Active. SessionId: {SessionId}",
+                            outbox.Id,
+                            wallet.Id,
+                            wallet.Status,
+                            externalCreditRequest.SessionId);
+                        return SettlementOutcome.Handled;
+                    }
+
+                    var settlementAccountId = await EnsureSystemAccountAsync(
+                        db, NovaWalletConstants.SystemAccounts.NipSettlementAccountNumber, AccountType.Asset, cancellationToken);
+
+                    var journalEntry = JournalEntry.Create(
+                        idempotencyKey: BuildDepositIdempotencyKey(externalCreditRequest.SessionId),
+                        requestPayloadHash: ComputeRequestPayloadHash(externalCreditRequest));
+
+                    journalEntry.AddDebitLine(
+                        settlementAccountId,
+                        externalCreditRequest.AmountKobo,
+                        $"NIP settlement - SessionId {externalCreditRequest.SessionId}");
+                    journalEntry.AddCreditLine(
+                        beneficiary.AccountId,
+                        externalCreditRequest.AmountKobo,
+                        $"NIP credit from {externalCreditRequest.OriginatingAccountNumber} - Ref {externalCreditRequest.TransactionReference}");
+
+                    if (!journalEntry.IsBalanced)
+                        throw new InvalidOperationException($"Deposit journal entry for SessionId {externalCreditRequest.SessionId} is not balanced.");
+
+                    var balanceBeforeKobo = wallet.AvailableBalanceKobo;
+                    wallet.Credit(externalCreditRequest.AmountKobo);
+
+                    externalCreditRequest.MarkCompleted();
+                    outbox.MarkProcessed();
+
+                    db.JournalEntries.Add(journalEntry);
+                    db.AuditLogs.Add(AuditLog.Create(
+                        walletId: wallet.Id,
+                        actorSubject: "system:nip-inbound",
+                        action: "Credit",
+                        balanceBeforeKobo: balanceBeforeKobo,
+                        balanceAfterKobo: wallet.AvailableBalanceKobo,
+                        correlationId: journalEntry.Id));
+
                     await db.SaveChangesAsync(cancellationToken);
                     await transaction.CommitAsync(cancellationToken);
 
@@ -265,6 +284,12 @@ namespace NovaWallet.Api.Workers
                         wallet.Id,
                         externalCreditRequest.AmountKobo,
                         journalEntry.Id);
+
+                    return SettlementOutcome.Handled;
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
                 }
                 catch (DbUpdateException ex) when (IsUniqueViolation(ex))
                 {
@@ -275,8 +300,100 @@ namespace NovaWallet.Api.Workers
 
                     _logger.LogWarning(
                         ex,
-                        "Deposit settlement lost a unique-constraint race despite row locking for SessionId {SessionId}. Treating as already-handled.",
-                        externalCreditRequest.SessionId);
+                        "Deposit settlement lost a unique-constraint race despite row locking for DepositOutbox {DepositOutboxId}. Treating as already-handled.",
+                        outboxId);
+
+                    return SettlementOutcome.Handled;
+                }
+                catch (Exception ex)
+                {
+                    // Atomicity: the whole settlement attempt rolls back explicitly rather than
+                    // relying on implicit dispose-rollback (mirrors TransferService.ProcessTransferAsync).
+                    await transaction.RollbackAsync(CancellationToken.None);
+
+                    _logger.LogError(
+                        ex,
+                        "Failed to settle DepositOutbox {DepositOutboxId} due to a transient error. Recording a failed attempt.",
+                        outboxId);
+
+                    return SettlementOutcome.TransientFailure;
+                }
+            });
+
+            if (outcome == SettlementOutcome.TransientFailure)
+            {
+                await RecordFailedAttemptAsync(outboxId, cancellationToken);
+            }
+        }
+
+        /// <summary>
+        /// Records a transient-failure attempt against the given outbox row, opening a fresh
+        /// scope/DbContext/transaction rather than reusing the (already rolled-back) one from the
+        /// settlement attempt itself - so the retry count is durably persisted even though the
+        /// failed attempt's own changes were not. If this exhausts <see cref="DepositOutbox.MaxRetries"/>,
+        /// the row transitions to <see cref="OutboxStatus.Failed"/> (see <see cref="DepositOutbox.RecordFailedAttempt"/>)
+        /// and the failure cascades to the linked <see cref="ExternalCreditRequest"/> too, in the
+        /// same transaction, so it's never left stuck at <see cref="DepositStatus.Pending"/> forever.
+        /// </summary>
+        private async Task RecordFailedAttemptAsync(Guid outboxId, CancellationToken cancellationToken)
+        {
+            await using var scope = _scopeFactory.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<NovaWalletDbContext>();
+
+            var strategy = db.Database.CreateExecutionStrategy();
+
+            await strategy.ExecuteAsync(async () =>
+            {
+                await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+
+                try
+                {
+                    var outbox = await db.DepositOutboxEntries
+                        .FromSqlInterpolated($"SELECT * FROM \"DepositOutbox\" WHERE \"Id\" = {outboxId} FOR UPDATE")
+                        .FirstOrDefaultAsync(cancellationToken);
+
+                    if (outbox is null || outbox.Status != OutboxStatus.Pending)
+                    {
+                        // Already resolved (e.g. by another worker instance, or self-healed) since
+                        // the transient failure occurred - nothing left to record.
+                        await transaction.RollbackAsync(CancellationToken.None);
+                        return;
+                    }
+
+                    var exhausted = outbox.RecordFailedAttempt();
+
+                    if (exhausted)
+                    {
+                        var externalCreditRequest = await db.ExternalCreditRequests
+                            .FirstAsync(x => x.Id == outbox.ExternalCreditRequestId, cancellationToken);
+
+                        if (externalCreditRequest.Status == DepositStatus.Pending)
+                        {
+                            externalCreditRequest.MarkFailed();
+                        }
+
+                        _logger.LogError(
+                            "DepositOutbox {DepositOutboxId} exhausted {MaxRetries} retries and is now permanently Failed. SessionId: {SessionId}",
+                            outbox.Id,
+                            DepositOutbox.MaxRetries,
+                            externalCreditRequest.SessionId);
+                    }
+
+                    await db.SaveChangesAsync(cancellationToken);
+                    await transaction.CommitAsync(cancellationToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    await transaction.RollbackAsync(CancellationToken.None);
+
+                    _logger.LogError(
+                        ex,
+                        "Failed to record a failed attempt for DepositOutbox {DepositOutboxId}. Row remains Pending with a stale retry count; will be revisited next poll.",
+                        outboxId);
                 }
             });
         }

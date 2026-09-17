@@ -1,4 +1,5 @@
 ﻿using NovaWallet.Api.Core.Enums;
+using UUIDNext;
 
 namespace NovaWallet.Api.Core.Models
 {
@@ -52,14 +53,14 @@ namespace NovaWallet.Api.Core.Models
         internal static AccountEntry CreateDebit(Guid journalEntryId, Guid accountId, long amountKobo, string transParticulars)
         {
             if (amountKobo <= 0) throw new ArgumentOutOfRangeException(nameof(amountKobo), "Debit amount must be positive.");
-            return new AccountEntry(Guid.NewGuid(), journalEntryId, accountId, amountKobo, EntryType.Debit,
+            return new AccountEntry(Uuid.NewSequential(), journalEntryId, accountId, amountKobo, EntryType.Debit,
                 NormalizeTransParticulars(transParticulars), DateTime.UtcNow);
         }
 
         internal static AccountEntry CreateCredit(Guid journalEntryId, Guid accountId, long amountKobo, string transParticulars)
         {
             if (amountKobo <= 0) throw new ArgumentOutOfRangeException(nameof(amountKobo), "Credit amount must be positive.");
-            return new AccountEntry(Guid.NewGuid(), journalEntryId, accountId, amountKobo, EntryType.Credit,
+            return new AccountEntry(Uuid.NewSequential(), journalEntryId, accountId, amountKobo, EntryType.Credit,
                 NormalizeTransParticulars(transParticulars), DateTime.UtcNow);
         }
 

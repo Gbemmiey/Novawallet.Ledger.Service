@@ -1,4 +1,5 @@
 ﻿using NovaWallet.Api.Core.Enums;
+using UUIDNext;
 
 namespace NovaWallet.Api.Core.Models
 {
@@ -44,7 +45,7 @@ namespace NovaWallet.Api.Core.Models
             if (string.IsNullOrWhiteSpace(requestPayloadHash))
                 throw new ArgumentException("RequestPayloadHash is required.", nameof(requestPayloadHash));
 
-            return new JournalEntry(Guid.NewGuid(), idempotencyKey, requestPayloadHash, DateTime.UtcNow);
+            return new JournalEntry(Uuid.NewSequential(), idempotencyKey, requestPayloadHash, DateTime.UtcNow);
         }
 
         public AccountEntry AddDebitLine(Guid accountId, long amountKobo, string transParticulars)

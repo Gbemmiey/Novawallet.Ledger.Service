@@ -22,7 +22,8 @@ namespace NovaWallet.Api.Features.Auth
                 .MapPost("/login", Login)
                 .WithTags("Authentication")
                 .AllowAnonymous()
-                .RequireRateLimiting(RateLimitingConstants.InternalAdminPolicy);
+                .RequireRateLimiting(RateLimitingConstants.InternalAdminPolicy)
+                .WithValidation<MockLoginRequest>();
 
             return group;
         }

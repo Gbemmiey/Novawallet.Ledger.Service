@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
+using NovaWallet.Api.Core.Enums;
 using NovaWallet.Api.Core.Models;
 
 namespace NovaWallet.Api.Infrastructure.Data.EntityConfigurations
@@ -38,7 +39,16 @@ namespace NovaWallet.Api.Infrastructure.Data.EntityConfigurations
                 .HasMaxLength(64)
                 .IsRequired();
 
+            builder.Property(t => t.Status)
+                .HasConversion<string>()
+                .HasMaxLength(20)
+                .HasDefaultValue(TransferStatus.Completed)
+                .IsRequired();
+
             builder.Property(t => t.TransactionDate)
+                .IsRequired();
+
+            builder.Property(t => t.DateModified)
                 .IsRequired();
 
             // One WalletTransfer per JournalEntry - mirrors the 1:1 relationship between
@@ -46,10 +56,10 @@ namespace NovaWallet.Api.Infrastructure.Data.EntityConfigurations
             builder.HasIndex(t => t.JournalEntryId)
                 .IsUnique();
 
-            // PaymentReference is the externally quotable reference for a transfer
-            // (currently the JournalEntry's Id) - indexed on its own since "look this
-            // transfer up by its reference" is a distinct, more likely query pattern
-            // than joining through JournalEntryId.
+            // PaymentReference is the externally quotable reference for a transfer - an
+            // independently system-generated UUID v7, decoupled from JournalEntryId -
+            // indexed on its own since "look this transfer up by its reference" is a
+            // distinct, more likely query pattern than joining through JournalEntryId.
             builder.HasIndex(t => t.PaymentReference)
                 .IsUnique();
 

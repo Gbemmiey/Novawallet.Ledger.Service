@@ -314,15 +314,15 @@ public sealed class TransferService : ITransferService
 
                 // Product-domain record of this transfer, distinct from the ledger's
                 // JournalEntry/AccountEntry pair - see WalletTransfer's doc comment.
-                // PaymentReference reuses the JournalEntry's Id so it stays exactly the
-                // value already handed back to callers today (ToResponse below).
+                // PaymentReference is generated internally by WalletTransfer.Create as its
+                // own independent UUID v7, decoupled from JournalEntryId (ToResponse below
+                // surfaces it to callers).
                 var walletTransfer = WalletTransfer.Create(
                     journalEntryId: journalEntry.Id,
                     sourceWalletId: lockedSource.Id,
                     destinationWalletId: lockedDestination.Id,
                     amountKobo: request.AmountInKobo,
                     narration: request.Narration,
-                    paymentReference: journalEntry.Id.ToString(),
                     transactionDate: journalEntry.CreatedAt);
 
                 _dbContext.JournalEntries.Add(journalEntry);

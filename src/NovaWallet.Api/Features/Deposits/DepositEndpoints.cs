@@ -23,7 +23,8 @@ namespace NovaWallet.Api.Features.Deposits
                 .WithName("SubmitDeposit")
                 .WithTags("Deposits")
                 .RequireAuthorization()
-                .Produces<ServiceApiResponse<NipSingleCreditResponse>>(StatusCodes.Status202Accepted);
+                .Produces<ServiceApiResponse<NipSingleCreditResponse>>(StatusCodes.Status202Accepted)
+                .WithValidation<NipSingleCreditRequest>();
 
             return group;
         }

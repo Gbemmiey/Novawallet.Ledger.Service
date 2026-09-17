@@ -36,7 +36,8 @@ namespace NovaWallet.Api.Features.Transfers
                     });
 
                     return operation;
-                });
+                })
+                .WithValidation<WalletTransferRequest>();
 
             return group;
         }

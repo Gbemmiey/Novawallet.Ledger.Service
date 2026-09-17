@@ -1,5 +1,6 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
+using NovaWallet.Api.Core.Enums;
 using NovaWallet.Api.Core.Models;
 
 namespace NovaWallet.Api.Infrastructure.Data.EntityConfigurations
@@ -46,11 +47,19 @@ namespace NovaWallet.Api.Infrastructure.Data.EntityConfigurations
                 .HasMaxLength(10)
                 .IsRequired();
 
-            builder.Property(x => x.IsProcessed)
+            builder.Property(x => x.Status)
+                .HasConversion<string>()
+                .HasMaxLength(20)
+                .HasDefaultValue(DepositStatus.Pending)
                 .IsRequired();
 
             builder.Property(x => x.CreatedAt)
                 .IsRequired();
+
+            builder.Property(x => x.DateModified)
+                .IsRequired();
+
+            builder.Property(x => x.CompletedDate);
 
             builder.Navigation(x => x.OutboxEntries)
                 .UsePropertyAccessMode(PropertyAccessMode.Field);

@@ -1,4 +1,5 @@
-﻿using UUIDNext;
+using NovaWallet.Api.Core.Enums;
+using UUIDNext;
 
 namespace NovaWallet.Api.Core.Models
 {
@@ -16,15 +17,17 @@ namespace NovaWallet.Api.Core.Models
         public string BeneficiaryAccountNumber { get; }
         public string OriginatingAccountNumber { get; }
         public string OriginatingBankCode { get; }
-        public bool IsProcessed { get; private set; }
+        public DepositStatus Status { get; private set; }
         public DateTime CreatedAt { get; }
+        public DateTime DateModified { get; private set; }
+        public DateTime? CompletedDate { get; private set; }
 
         private readonly List<DepositOutbox> _outboxEntries = [];
         public IReadOnlyCollection<DepositOutbox> OutboxEntries => _outboxEntries;
 
         private ExternalCreditRequest(Guid id, string sessionId, string transactionReference, long amountKobo,
             string beneficiaryAccountNumber, string originatingAccountNumber, string originatingBankCode,
-            bool isProcessed, DateTime createdAt)
+            DepositStatus status, DateTime createdAt, DateTime dateModified, DateTime? completedDate)
         {
             Id = id;
             SessionId = sessionId;
@@ -33,8 +36,10 @@ namespace NovaWallet.Api.Core.Models
             BeneficiaryAccountNumber = beneficiaryAccountNumber;
             OriginatingAccountNumber = originatingAccountNumber;
             OriginatingBankCode = originatingBankCode;
-            IsProcessed = isProcessed;
+            Status = status;
             CreatedAt = createdAt;
+            DateModified = dateModified;
+            CompletedDate = completedDate;
         }
 
         public static ExternalCreditRequest Create(string sessionId, string transactionReference, long amountKobo,
@@ -47,6 +52,8 @@ namespace NovaWallet.Api.Core.Models
             if (string.IsNullOrWhiteSpace(beneficiaryAccountNumber))
                 throw new ArgumentException("BeneficiaryAccountNumber is required.", nameof(beneficiaryAccountNumber));
 
+            var now = DateTime.UtcNow;
+
             return new ExternalCreditRequest(
                 id: Uuid.NewSequential(),
                 sessionId: sessionId,
@@ -55,14 +62,30 @@ namespace NovaWallet.Api.Core.Models
                 beneficiaryAccountNumber: beneficiaryAccountNumber,
                 originatingAccountNumber: originatingAccountNumber,
                 originatingBankCode: originatingBankCode,
-                isProcessed: false,
-                createdAt: DateTime.UtcNow);
+                status: DepositStatus.Pending,
+                createdAt: now,
+                dateModified: now,
+                completedDate: null);
         }
 
-        public void MarkProcessed()
+        public void MarkCompleted()
         {
-            if (IsProcessed) throw new InvalidOperationException($"ExternalCreditRequest {Id} is already processed.");
-            IsProcessed = true;
+            if (Status != DepositStatus.Pending)
+                throw new InvalidOperationException($"ExternalCreditRequest {Id} is not pending (status: {Status}).");
+
+            var now = DateTime.UtcNow;
+            Status = DepositStatus.Completed;
+            CompletedDate = now;
+            DateModified = now;
+        }
+
+        public void MarkFailed()
+        {
+            if (Status != DepositStatus.Pending)
+                throw new InvalidOperationException($"ExternalCreditRequest {Id} is not pending (status: {Status}).");
+
+            Status = DepositStatus.Failed;
+            DateModified = DateTime.UtcNow;
         }
     }
 }
