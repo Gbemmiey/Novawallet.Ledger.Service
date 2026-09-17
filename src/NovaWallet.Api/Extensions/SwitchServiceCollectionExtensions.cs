@@ -32,6 +32,7 @@ namespace NovaWallet.Api.Extensions
         public static IServiceCollection RegisterApplicationOptions(this IServiceCollection services, IConfiguration configuration)
         {
             services.Configure<DepositConsumerOptions>(configuration.GetSection("DepositConsumer"));
+            services.Configure<ReconciliationWorkerOptions>(configuration.GetSection("ReconciliationWorker"));
             return services;
         }
 
@@ -43,6 +44,7 @@ namespace NovaWallet.Api.Extensions
             services.AddScoped<IDepositService, DepositService>();
             services.AddScoped<ITransferService, TransferService>();
             services.AddHostedService<DepositConsumer>();
+            services.AddHostedService<ReconciliationWorker>();
             return services;
         }
 

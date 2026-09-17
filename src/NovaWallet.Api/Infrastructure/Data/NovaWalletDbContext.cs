@@ -24,6 +24,7 @@ namespace NovaWallet.Api.Infrastructure.Data
         public DbSet<AccountEntry> AccountEntries => Set<AccountEntry>();
         public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
         public DbSet<WalletTransfer> WalletTransfers => Set<WalletTransfer>();
+        public DbSet<LedgerSnapshot> LedgerSnapshots => Set<LedgerSnapshot>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {

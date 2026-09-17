@@ -20,8 +20,9 @@ Inbound NIP deposits arrive via API callbacks from NIBSS rails carrying a 30-dig
 * **`Wallet` (Product Domain):** Holds mutable state (`AvailableBalanceKobo`), wallet status, and user-facing attributes. Features an $O(1)$ fast-access balance guard against overdrafts.
 * **`Account` (Ledger Domain):** Tracks immutable financial records (`AccountEntries`). Its balance is a derived aggregate ($\sum \text{Credits} - \sum \text{Debits}$) serving as the legal audit trail.
 * **`WalletTransfer` (Product Domain):** A queryable, wallet-keyed record of each completed transfer (`SourceWalletId`, `DestinationWalletId`, `Narration`, `PaymentReference`, `TransactionDate`), written in the same transaction as its `JournalEntry`/`AccountEntry` pair. Exists because "what transfers happened between which wallets" — and product-facing fields like `Narration` — have no home on the ledger's account-keyed tables, yet are exactly what a wallet statement / transfer history view needs without joining out to `Accounts`.
-* **Reconciliation Worker:** An automated `IHostedService` periodically asserts:
+* **Reconciliation Worker:** `ReconciliationWorker` (an `IHostedService`) continuously sweeps every wallet via an in-memory keyset cursor (`WHERE "Id" > cursor ORDER BY "Id" LIMIT BatchSize`, wrapping back to the start once a batch comes back short of `BatchSize`) and asserts, per wallet:
   $$\text{Wallet.AvailableBalanceKobo} == \sum \text{AccountEntries.Credit} - \sum \text{AccountEntries.Debit}$$
+  Each batch is read via a **single SQL statement** (`Wallets` LEFT JOINed to a correlated `SUM` over `AccountEntries`, grouped per wallet), so `WalletBalanceKobo` and `LedgerBalanceKobo` are always read from the same Postgres MVCC snapshot — no read-skew false positives from an in-flight transfer, since every write to a wallet's balance and its paired `AccountEntries` commits together in one DB transaction (`TransferService`/`DepositConsumer`). A `LedgerSnapshot` row is written for **every** wallet checked each sweep — balanced or not — giving a full historical timeline of ledger health rather than an alert-only log. Any wallet found unbalanced while still `Active` is **immediately frozen** (`Wallet.Status → Frozen`, via the same atomic guarded-`UPDATE` pattern as §4) and audited (`AuditLog` action `"Freeze"`, actor `"system:reconciliation"`) in the same transaction as the snapshot write — safe to do without a grace period precisely because of the single-statement consistency guarantee above. Auto-freeze is gated by `ReconciliationWorker:AutoFreezeOnDiscrepancy` (default `true`) as an operational kill-switch, in case the snapshot computation itself is ever suspected of producing false positives — with it off (or the wallet already non-`Active`), the discrepancy is still recorded and logged, just not acted on. There is currently no automated unfreeze path — `Wallet.Reactivate()` exists but nothing calls it yet, so an auto-frozen wallet requires manual/admin intervention to restore.
 
 ### 4. Concurrency & Overdraft Guard Strategy
 * **Deadlock Prevention:** Before initiating an inter-wallet transfer, wallet IDs are sorted deterministically ($\min(A, B) \to \max(A, B)$) to lock database rows in a consistent order.
@@ -269,6 +270,29 @@ CREATE INDEX "IX_WalletTransfers_DestinationWalletId_TransactionDate"
 
 -- Amount guard backstop, independent of application-layer validation
 ALTER TABLE "ExternalCreditRequests" ADD CONSTRAINT "CHK_ExternalCredit_AmountPositive" CHECK ("AmountKobo" > 0);
+
+-- Insert-only reconciliation record, one row per wallet per sweep tick (README §3), written by
+-- ReconciliationWorker. Every wallet checked in a sweep gets a row, balanced or not, so this
+-- doubles as a full historical timeline of ledger health rather than only an alert log.
+CREATE TABLE "LedgerSnapshot" (
+    "Id" UUID PRIMARY KEY,
+    "RunId" UUID NOT NULL,                 -- groups every wallet checked in one sweep tick
+    "WalletId" UUID NOT NULL REFERENCES "Wallets"("Id"),
+    "AccountId" UUID NOT NULL REFERENCES "Accounts"("Id"),
+    "WalletBalanceKobo" BIGINT NOT NULL,   -- Wallet.AvailableBalanceKobo at snapshot time
+    "LedgerBalanceKobo" BIGINT NOT NULL,   -- Sum(Credit) - Sum(Debit) over AccountEntries for AccountId
+    "DiscrepancyKobo" BIGINT NOT NULL,     -- WalletBalanceKobo - LedgerBalanceKobo
+    "IsBalanced" BOOLEAN NOT NULL,
+    "CreatedAt" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Latest snapshot per wallet - "show current reconciliation status" query
+CREATE INDEX "IX_LedgerSnapshot_WalletId_CreatedAt"
+    ON "LedgerSnapshot" ("WalletId", "CreatedAt" DESC);
+
+-- Fast "list current discrepancies, newest first" query - partial index over mismatches only
+CREATE INDEX "IX_LedgerSnapshot_IsBalanced_Partial"
+    ON "LedgerSnapshot" ("CreatedAt" DESC) WHERE "IsBalanced" = false;
 ```
 
 ---
