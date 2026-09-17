@@ -66,4 +66,15 @@ public static class NovaWalletConstants
         /// </summary>
         public const string NipSettlementAccountNumber = "1000-NIP-SETTLEMENT";
     }
+
+    /// <summary>
+    /// Outbound inter-wallet transfer limits, enforced atomically via the
+    /// <c>WalletDailyUsage</c> guarded UPSERT in <c>TransferService</c> (README §6).
+    /// The usage bucket is always the WAT (Africa/Lagos) calendar day.
+    /// </summary>
+    public static class TransferLimits
+    {
+        /// <summary>₦500,000/day, expressed in kobo.</summary>
+        public const long DailyOutboundLimitKobo = 50_000_000;
+    }
 }

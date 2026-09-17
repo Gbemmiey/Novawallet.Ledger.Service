@@ -5,5 +5,5 @@ namespace NovaWallet.Api.Core.Services;
 
 public interface ITransferService
 {
-        Task Transfer(WalletTransferRequest request, CancellationToken cancellationToken); 
+    Task<ServiceApiResponse<WalletTransferResponse>> Transfer(WalletTransferRequest request, CancellationToken cancellationToken);
 }

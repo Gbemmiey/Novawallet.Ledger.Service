@@ -41,6 +41,7 @@ namespace NovaWallet.Api.Extensions
             services.AddScoped<IMockUserAuthHelper, MockUserAuthHelper>();
             services.AddScoped<IWalletService, WalletService>();
             services.AddScoped<IDepositService, DepositService>();
+            services.AddScoped<ITransferService, TransferService>();
             services.AddHostedService<DepositConsumer>();
             return services;
         }

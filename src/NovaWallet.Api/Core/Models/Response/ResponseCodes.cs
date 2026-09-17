@@ -56,6 +56,12 @@ public static class ResponseCodes
         ResponseDescription = "Insufficient balance."
     };
 
+    public static Response DailyLimitExceeded = new()
+    {
+        ResponseCode = StatusCodes.Status422UnprocessableEntity.ToString(),
+        ResponseDescription = "Daily outbound transfer limit exceeded."
+    };
+
     public static Response SystemMalfunction = new()
     {
         ResponseCode = StatusCodes.Status500InternalServerError.ToString(),
