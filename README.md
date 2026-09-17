@@ -302,8 +302,8 @@ CREATE INDEX "IX_LedgerSnapshot_IsBalanced_Partial"
 * **Framework:** .NET 9 Web API (C# 13)
 * **Primary Database:** PostgreSQL 16
 * **Cache & Idempotency:** Redis 7
-* **Message Broker:** RabbitMQ 3.13 (for Outbox consumers)
-* **Observability:** OpenTelemetry Collector + Prometheus + Grafana
+* **Message Broker:** RabbitMQ 3.13 — listed for architectural completeness; **not yet wired into any running code path** (no `ConnectionFactory`/publisher/consumer exists today, only OTel trace-context helper classes reference RabbitMQ types for future use). Available via the opt-in `observability` Compose profile below, not started by default.
+* **Observability:** OpenTelemetry Collector (forwarding to Grafana Cloud) + Prometheus — the app exports OTLP traces/metrics directly and Prometheus scrapes `/metrics` on the API itself regardless of whether a collector is present (the OTLP exporter is non-blocking/async on connection failure). The Collector is likewise behind the `observability` profile, not started by default.
 * **Error Format:** RFC 7807 Problem Details
 
 ---
@@ -317,16 +317,26 @@ CREATE INDEX "IX_LedgerSnapshot_IsBalanced_Partial"
 
 ### Running via Docker Compose
 
-Spin up the backend API, PostgreSQL datastore, Redis cache, RabbitMQ broker, and OpenTelemetry stack with a single command:
+Copy `.env.example` to `.env` (a working `.env` with dev-only placeholder values already ships in this repo, so this step is optional) and start the core stack — API, PostgreSQL, Redis — with a single command:
 
 ```bash
-docker compose up --build -d
+docker compose up --build
 ```
+
+The optional RabbitMQ + OpenTelemetry Collector services (see the stack note above) are gated behind a Compose `profile` and an override file, since nothing in the running app depends on them:
+
+```bash
+docker compose --profile observability -f docker-compose.yml -f docker-compose.observability.yml up --build
+```
+
+The Collector forwards to a real Grafana Cloud tenant (`ops/otel-collector-config.yaml`), so `GRAFANA_CLOUD_OTLP_ENDPOINT` / `GRAFANA_CLOUD_BASIC_AUTH_HEADER` must be supplied in `.env` for that profile to be useful — left blank by default.
+
+> **Pending migration note:** `Migrations/` currently only covers schema up through the `OutboxEnums` migration. The `WalletTransfer` and `LedgerSnapshot` tables (added in later iterations — see §3) do not have migrations yet, so against a fresh volume `POST /api/v1/wallets/transfer` and the `ReconciliationWorker` will fail until those migrations are hand-authored and applied. Deposits, wallet creation, and wallet reads work end-to-end today.
 
 Once started:
 
 * **OpenAPI / Swagger Specs:** `http://localhost:5000/swagger`
-* **Health / Readiness Endpoint:** `http://localhost:5000/healthz`
+* **Health / Readiness Endpoint:** `http://localhost:5000/health`
 * **Prometheus Metrics:** `http://localhost:5000/metrics`
 
 ---

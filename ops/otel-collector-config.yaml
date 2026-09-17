@@ -1,0 +1,31 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+
+exporters:
+  otlphttp/grafana:
+    endpoint: '${env:GRAFANA_CLOUD_OTLP_ENDPOINT}'
+    headers:
+      authorization: '${env:GRAFANA_CLOUD_BASIC_AUTH_HEADER}'
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlphttp/grafana]
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlphttp/grafana]
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlphttp/grafana]
