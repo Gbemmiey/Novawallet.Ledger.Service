@@ -226,8 +226,14 @@ namespace NovaWallet.Api.Workers
                     idempotencyKey: BuildDepositIdempotencyKey(externalCreditRequest.SessionId),
                     requestPayloadHash: ComputeRequestPayloadHash(externalCreditRequest));
 
-                journalEntry.AddDebitLine(settlementAccountId, externalCreditRequest.AmountKobo);
-                journalEntry.AddCreditLine(beneficiary.AccountId, externalCreditRequest.AmountKobo);
+                journalEntry.AddDebitLine(
+                    settlementAccountId,
+                    externalCreditRequest.AmountKobo,
+                    $"NIP settlement - SessionId {externalCreditRequest.SessionId}");
+                journalEntry.AddCreditLine(
+                    beneficiary.AccountId,
+                    externalCreditRequest.AmountKobo,
+                    $"NIP credit from {externalCreditRequest.OriginatingAccountNumber} - Ref {externalCreditRequest.TransactionReference}");
 
                 if (!journalEntry.IsBalanced)
                     throw new InvalidOperationException($"Deposit journal entry for SessionId {externalCreditRequest.SessionId} is not balanced.");

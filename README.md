@@ -19,6 +19,7 @@ Inbound NIP deposits arrive via API callbacks from NIBSS rails carrying a 30-dig
 ### 3. Separation of Concerns: Product vs. Ledger Domain
 * **`Wallet` (Product Domain):** Holds mutable state (`AvailableBalanceKobo`), wallet status, and user-facing attributes. Features an $O(1)$ fast-access balance guard against overdrafts.
 * **`Account` (Ledger Domain):** Tracks immutable financial records (`AccountEntries`). Its balance is a derived aggregate ($\sum \text{Credits} - \sum \text{Debits}$) serving as the legal audit trail.
+* **`WalletTransfer` (Product Domain):** A queryable, wallet-keyed record of each completed transfer (`SourceWalletId`, `DestinationWalletId`, `Narration`, `PaymentReference`, `TransactionDate`), written in the same transaction as its `JournalEntry`/`AccountEntry` pair. Exists because "what transfers happened between which wallets" — and product-facing fields like `Narration` — have no home on the ledger's account-keyed tables, yet are exactly what a wallet statement / transfer history view needs without joining out to `Accounts`.
 * **Reconciliation Worker:** An automated `IHostedService` periodically asserts:
   $$\text{Wallet.AvailableBalanceKobo} == \sum \text{AccountEntries.Credit} - \sum \text{AccountEntries.Debit}$$
 
@@ -208,6 +209,9 @@ CREATE TABLE "AccountEntries" (
     "AccountId" UUID NOT NULL REFERENCES "Accounts"("Id"),
     "AmountKobo" BIGINT NOT NULL,
     "EntryType" VARCHAR(20) NOT NULL, -- 'Debit' | 'Credit'
+    "TransParticulars" VARCHAR(100) NOT NULL, -- system-composed, per-leg narration (auto-trimmed/truncated);
+                                               -- distinct from WalletTransfers.Narration, which is one
+                                               -- free-text value shared by both legs of a transfer
     "CreatedAt" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     -- The amount is always positive; EntryType discriminates the side of the posting
     CONSTRAINT "CHK_AccountEntries_PositiveAmount" CHECK ("AmountKobo" > 0)
@@ -232,6 +236,30 @@ CREATE TABLE "AuditLog" (
     "CorrelationId" UUID NOT NULL,
     "CreatedAt" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Product-domain record of a completed inter-wallet transfer, written in the same
+-- transaction as its JournalEntry/AccountEntry pair. AccountEntries answers "what moved,
+-- in double-entry terms" keyed by AccountId; WalletTransfers answers "what transfers
+-- happened between which wallets" keyed by WalletId on both sides, and carries
+-- Narration/PaymentReference — product-domain fields with no home on the ledger tables —
+-- so a "list my transfers" / wallet statement view can query it directly.
+CREATE TABLE "WalletTransfers" (
+    "Id" UUID PRIMARY KEY,
+    "JournalEntryId" UUID NOT NULL UNIQUE REFERENCES "JournalEntries"("Id"),
+    "SourceWalletId" UUID NOT NULL REFERENCES "Wallets"("Id"),
+    "DestinationWalletId" UUID NOT NULL REFERENCES "Wallets"("Id"),
+    "AmountKobo" BIGINT NOT NULL,
+    "Narration" VARCHAR(200),
+    "PaymentReference" VARCHAR(64) UNIQUE NOT NULL, -- currently JournalEntries.Id.ToString()
+    "TransactionDate" TIMESTAMPTZ NOT NULL,
+    CONSTRAINT "CHK_WalletTransfers_AmountPositive" CHECK ("AmountKobo" > 0)
+);
+
+-- Transfer-history query support: paginated, newest-first per wallet, on either side
+CREATE INDEX "IX_WalletTransfers_SourceWalletId_TransactionDate"
+    ON "WalletTransfers" ("SourceWalletId", "TransactionDate" DESC);
+CREATE INDEX "IX_WalletTransfers_DestinationWalletId_TransactionDate"
+    ON "WalletTransfers" ("DestinationWalletId", "TransactionDate" DESC);
 
 -- Amount guard backstop, independent of application-layer validation
 ALTER TABLE "ExternalCreditRequests" ADD CONSTRAINT "CHK_ExternalCredit_AmountPositive" CHECK ("AmountKobo" > 0);

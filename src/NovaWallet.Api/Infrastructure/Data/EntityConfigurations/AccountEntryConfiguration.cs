@@ -33,6 +33,10 @@ namespace NovaWallet.Api.Infrastructure.Data.EntityConfigurations
                 .HasMaxLength(20)
                 .IsRequired();
 
+            builder.Property(a => a.TransParticulars)
+                .HasMaxLength(100)
+                .IsRequired();
+
             builder.Property(a => a.CreatedAt)
                 .IsRequired();
 

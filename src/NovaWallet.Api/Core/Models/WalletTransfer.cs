@@ -1,0 +1,76 @@
+using UUIDNext;
+
+namespace NovaWallet.Api.Core.Models
+{
+    /// <summary>
+    /// Read/query-friendly record of a completed inter-wallet transfer, written in the
+    /// same DB transaction as its <see cref="JournalEntry"/>/<see cref="AccountEntry"/>
+    /// pair (see TransferService.ProcessTransferAsync). AccountEntries answers "what
+    /// moved, in double-entry terms" and is keyed by AccountId; this table answers "what
+    /// transfers happened between which wallets" and is keyed by WalletId directly on
+    /// both sides — Narration and the wallet-to-wallet shape of a transfer are
+    /// product-domain concepts that don't belong on the ledger's
+    /// JournalEntries/AccountEntries tables, yet are exactly what a "list my transfers" /
+    /// wallet statement view needs without joining out to Accounts. Insert-only: there
+    /// is no mutation method here, matching AuditLog.
+    ///
+    /// TransactionDate is deliberately passed in by the caller (as the owning
+    /// JournalEntry's CreatedAt) rather than stamped independently with DateTime.UtcNow,
+    /// so a replayed request's response and this row always agree on the transfer's
+    /// timestamp to the tick.
+    /// </summary>
+    public class WalletTransfer
+    {
+        public Guid Id { get; }
+        public Guid JournalEntryId { get; }
+        public JournalEntry? JournalEntry { get; private set; }
+        public Guid SourceWalletId { get; }
+        public Wallet? SourceWallet { get; private set; }
+        public Guid DestinationWalletId { get; }
+        public Wallet? DestinationWallet { get; private set; }
+        public long AmountKobo { get; }
+        public string? Narration { get; }
+        public string PaymentReference { get; }
+        public DateTime TransactionDate { get; }
+
+        private WalletTransfer(Guid id, Guid journalEntryId, Guid sourceWalletId, Guid destinationWalletId,
+            long amountKobo, string? narration, string paymentReference, DateTime transactionDate)
+        {
+            Id = id;
+            JournalEntryId = journalEntryId;
+            SourceWalletId = sourceWalletId;
+            DestinationWalletId = destinationWalletId;
+            AmountKobo = amountKobo;
+            Narration = narration;
+            PaymentReference = paymentReference;
+            TransactionDate = transactionDate;
+        }
+
+        public static WalletTransfer Create(Guid journalEntryId, Guid sourceWalletId, Guid destinationWalletId,
+            long amountKobo, string? narration, string paymentReference, DateTime transactionDate)
+        {
+            if (journalEntryId == Guid.Empty)
+                throw new ArgumentException("JournalEntryId is required.", nameof(journalEntryId));
+            if (sourceWalletId == Guid.Empty)
+                throw new ArgumentException("SourceWalletId is required.", nameof(sourceWalletId));
+            if (destinationWalletId == Guid.Empty)
+                throw new ArgumentException("DestinationWalletId is required.", nameof(destinationWalletId));
+            if (sourceWalletId == destinationWalletId)
+                throw new ArgumentException("SourceWalletId and DestinationWalletId must differ.", nameof(destinationWalletId));
+            if (amountKobo <= 0)
+                throw new ArgumentOutOfRangeException(nameof(amountKobo), "AmountKobo must be positive.");
+            if (string.IsNullOrWhiteSpace(paymentReference))
+                throw new ArgumentException("PaymentReference is required.", nameof(paymentReference));
+
+            return new WalletTransfer(
+                id: Uuid.NewSequential(),
+                journalEntryId: journalEntryId,
+                sourceWalletId: sourceWalletId,
+                destinationWalletId: destinationWalletId,
+                amountKobo: amountKobo,
+                narration: narration,
+                paymentReference: paymentReference,
+                transactionDate: transactionDate);
+        }
+    }
+}

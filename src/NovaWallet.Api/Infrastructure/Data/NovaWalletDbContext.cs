@@ -23,6 +23,7 @@ namespace NovaWallet.Api.Infrastructure.Data
         public DbSet<JournalEntry> JournalEntries => Set<JournalEntry>();
         public DbSet<AccountEntry> AccountEntries => Set<AccountEntry>();
         public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
+        public DbSet<WalletTransfer> WalletTransfers => Set<WalletTransfer>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {

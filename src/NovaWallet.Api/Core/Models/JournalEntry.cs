@@ -47,16 +47,16 @@ namespace NovaWallet.Api.Core.Models
             return new JournalEntry(Guid.NewGuid(), idempotencyKey, requestPayloadHash, DateTime.UtcNow);
         }
 
-        public AccountEntry AddDebitLine(Guid accountId, long amountKobo)
+        public AccountEntry AddDebitLine(Guid accountId, long amountKobo, string transParticulars)
         {
-            var line = AccountEntry.CreateDebit(Id, accountId, amountKobo);
+            var line = AccountEntry.CreateDebit(Id, accountId, amountKobo, transParticulars);
             _lines.Add(line);
             return line;
         }
 
-        public AccountEntry AddCreditLine(Guid accountId, long amountKobo)
+        public AccountEntry AddCreditLine(Guid accountId, long amountKobo, string transParticulars)
         {
-            var line = AccountEntry.CreateCredit(Id, accountId, amountKobo);
+            var line = AccountEntry.CreateCredit(Id, accountId, amountKobo, transParticulars);
             _lines.Add(line);
             return line;
         }

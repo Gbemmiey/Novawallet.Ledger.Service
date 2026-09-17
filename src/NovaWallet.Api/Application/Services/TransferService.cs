@@ -143,18 +143,18 @@ public sealed class TransferService : ITransferService
         {
             // Claim contention or Redis unavailable: fall through to the DB-authoritative
             // lookup rather than assuming this is a duplicate (README §5 step 2).
-            var existingJournalEntry = await FindByIdempotencyKey(idempotencyKey, cancellationToken);
+            var existingLookup = await FindByIdempotencyKey(idempotencyKey, cancellationToken);
 
-            if (existingJournalEntry is not null)
+            if (existingLookup is { } existing)
             {
-                if (existingJournalEntry.RequestPayloadHash == requestPayloadHash)
+                if (existing.RequestPayloadHash == requestPayloadHash)
                 {
                     _logger.LogInformation(
                         "Transfer replay detected for IdempotencyKey {IdempotencyKey}. Returning original result.",
                         idempotencyKey);
 
                     return ServiceApiResponse<WalletTransferResponse>.CreateSuccess(
-                        ToResponse(request, existingJournalEntry));
+                        ToResponse(request, existing));
                 }
 
                 _logger.LogWarning(
@@ -171,7 +171,7 @@ public sealed class TransferService : ITransferService
         var wallets = await _dbContext.Wallets
             .AsNoTracking()
             .Where(w => w.Id == sourceWalletId || w.Id == destinationWalletId)
-            .Select(w => new { w.Id, w.UserId, w.Status, w.Currency })
+            .Select(w => new { w.Id, w.UserId, w.Status, w.Currency, AccountNumber = w.Account!.AccountNumber })
             .ToListAsync(cancellationToken);
 
         var sourceWallet = wallets.FirstOrDefault(w => w.Id == sourceWalletId);
@@ -294,8 +294,14 @@ public sealed class TransferService : ITransferService
                 lockedDestination.Credit(request.AmountInKobo);
 
                 var journalEntry = JournalEntry.Create(idempotencyKey, requestPayloadHash);
-                journalEntry.AddDebitLine(lockedSource.AccountId, request.AmountInKobo);
-                journalEntry.AddCreditLine(lockedDestination.AccountId, request.AmountInKobo);
+                journalEntry.AddDebitLine(
+                    lockedSource.AccountId,
+                    request.AmountInKobo,
+                    ComposeParticulars($"Transfer to {destinationWallet.AccountNumber}", request.Narration));
+                journalEntry.AddCreditLine(
+                    lockedDestination.AccountId,
+                    request.AmountInKobo,
+                    ComposeParticulars($"Transfer from {sourceWallet.AccountNumber}", request.Narration));
 
                 if (!journalEntry.IsBalanced)
                 {
@@ -306,8 +312,22 @@ public sealed class TransferService : ITransferService
                 var transferOutbox = TransferOutbox.Create(journalEntry.Id);
                 var actorSubject = callerUserId.ToString();
 
+                // Product-domain record of this transfer, distinct from the ledger's
+                // JournalEntry/AccountEntry pair - see WalletTransfer's doc comment.
+                // PaymentReference reuses the JournalEntry's Id so it stays exactly the
+                // value already handed back to callers today (ToResponse below).
+                var walletTransfer = WalletTransfer.Create(
+                    journalEntryId: journalEntry.Id,
+                    sourceWalletId: lockedSource.Id,
+                    destinationWalletId: lockedDestination.Id,
+                    amountKobo: request.AmountInKobo,
+                    narration: request.Narration,
+                    paymentReference: journalEntry.Id.ToString(),
+                    transactionDate: journalEntry.CreatedAt);
+
                 _dbContext.JournalEntries.Add(journalEntry);
                 _dbContext.TransferOutboxEntries.Add(transferOutbox);
+                _dbContext.WalletTransfers.Add(walletTransfer);
                 _dbContext.AuditLogs.Add(AuditLog.Create(
                     walletId: lockedSource.Id,
                     actorSubject: actorSubject,
@@ -334,15 +354,7 @@ public sealed class TransferService : ITransferService
                     request.AmountInKobo,
                     journalEntry.Id);
 
-                return ServiceApiResponse<WalletTransferResponse>.CreateSuccess(new WalletTransferResponse
-                {
-                    SourceWalletId = lockedSource.Id.ToString(),
-                    DestinationWalletId = lockedDestination.Id.ToString(),
-                    AmountInKobo = request.AmountInKobo,
-                    Narration = request.Narration,
-                    TransactionDate = journalEntry.CreatedAt,
-                    PaymentReference = journalEntry.Id.ToString()
-                });
+                return ServiceApiResponse<WalletTransferResponse>.CreateSuccess(ToResponse(walletTransfer));
             }
             catch (OperationCanceledException)
             {
@@ -359,16 +371,16 @@ public sealed class TransferService : ITransferService
                 // step 4); this is the app-level reconciliation of that outcome.
                 var raceWinner = await FindByIdempotencyKey(idempotencyKey, cancellationToken);
 
-                if (raceWinner is not null)
+                if (raceWinner is { } winner)
                 {
-                    if (raceWinner.RequestPayloadHash == requestPayloadHash)
+                    if (winner.RequestPayloadHash == requestPayloadHash)
                     {
                         _logger.LogInformation(
                             "Transfer replay detected after unique constraint race for IdempotencyKey {IdempotencyKey}.",
                             idempotencyKey);
 
                         return ServiceApiResponse<WalletTransferResponse>.CreateSuccess(
-                            ToResponse(request, raceWinner));
+                            ToResponse(request, winner));
                     }
 
                     _logger.LogWarning(
@@ -419,12 +431,25 @@ public sealed class TransferService : ITransferService
             .FirstAsync(cancellationToken);
     }
 
-    private Task<JournalEntry?> FindByIdempotencyKey(string idempotencyKey, CancellationToken cancellationToken)
+    /// <summary>
+    /// Looks up a transfer by its IdempotencyKey, left-joining the persisted
+    /// WalletTransfer row (written in the same transaction as the JournalEntry, so the
+    /// two are always consistent with each other - the join is defensive, not expected
+    /// to ever come back null when a JournalEntry is found).
+    /// </summary>
+    private Task<IdempotencyLookupResult?> FindByIdempotencyKey(string idempotencyKey, CancellationToken cancellationToken)
     {
-        return _dbContext.JournalEntries
-            .AsNoTracking()
-            .FirstOrDefaultAsync(j => j.IdempotencyKey == idempotencyKey, cancellationToken);
+        return (
+            from j in _dbContext.JournalEntries.AsNoTracking()
+            where j.IdempotencyKey == idempotencyKey
+            join t in _dbContext.WalletTransfers.AsNoTracking() on j.Id equals t.JournalEntryId into transfers
+            from t in transfers.DefaultIfEmpty()
+            select new IdempotencyLookupResult(j.Id, j.CreatedAt, j.RequestPayloadHash, t))
+            .FirstOrDefaultAsync(cancellationToken);
     }
+
+    private sealed record IdempotencyLookupResult(
+        Guid JournalEntryId, DateTime JournalEntryCreatedAt, string RequestPayloadHash, WalletTransfer? Transfer);
 
     private async Task<bool> TryClaimIdempotencyKeyAsync(string idempotencyKey, CancellationToken cancellationToken)
     {
@@ -456,22 +481,62 @@ public sealed class TransferService : ITransferService
     private static string RedisClaimKey(string idempotencyKey) => $"idempotency:{idempotencyKey}";
 
     /// <summary>
-    /// Reconstructs the response for a replayed request. Narration/AmountInKobo/wallet
-    /// IDs are echoed from the (hash-verified-identical) incoming request rather than
-    /// stored redundantly on JournalEntry/AccountEntry, matching how DepositService.ToResponse
-    /// echoes Narration back from the request on a deposit replay.
+    /// Reconstructs the response for a replayed request from the persisted
+    /// WalletTransfer row - the authoritative, queryable record of this transfer.
+    /// Falls back to echoing the (hash-verified-identical) incoming request only if no
+    /// WalletTransfer is found, which should be unreachable in practice since both rows
+    /// are written in the same DB transaction; kept purely as a defensive fallback so a
+    /// replay can never fail outright over this.
     /// </summary>
-    private static WalletTransferResponse ToResponse(WalletTransferRequest request, JournalEntry journalEntry)
+    private WalletTransferResponse ToResponse(WalletTransferRequest request, IdempotencyLookupResult lookup)
     {
+        if (lookup.Transfer is { } transfer)
+        {
+            return ToResponse(transfer);
+        }
+
+        _logger.LogWarning(
+            "WalletTransfer row missing for JournalEntry {JournalEntryId} despite a matching IdempotencyKey hash - falling back to echoing the request.",
+            lookup.JournalEntryId);
+
         return new WalletTransferResponse
         {
             SourceWalletId = request.SourceWalletId,
             DestinationWalletId = request.DestinationWalletId,
             AmountInKobo = request.AmountInKobo,
             Narration = request.Narration,
-            TransactionDate = journalEntry.CreatedAt,
-            PaymentReference = journalEntry.Id.ToString()
+            TransactionDate = lookup.JournalEntryCreatedAt,
+            PaymentReference = lookup.JournalEntryId.ToString()
         };
+    }
+
+    /// <summary>
+    /// Builds the API response directly from a persisted WalletTransfer - used both for
+    /// a brand-new transfer's success response and for a DB-authoritative replay.
+    /// </summary>
+    private static WalletTransferResponse ToResponse(WalletTransfer transfer)
+    {
+        return new WalletTransferResponse
+        {
+            SourceWalletId = transfer.SourceWalletId.ToString(),
+            DestinationWalletId = transfer.DestinationWalletId.ToString(),
+            AmountInKobo = transfer.AmountKobo,
+            Narration = transfer.Narration,
+            TransactionDate = transfer.TransactionDate,
+            PaymentReference = transfer.PaymentReference
+        };
+    }
+
+    /// <summary>
+    /// Composes an AccountEntry line's TransParticulars from a fixed prefix describing the
+    /// counterparty side plus the caller-supplied Narration, if any. Truncation to 100 chars
+    /// happens inside AccountEntry itself, not here.
+    /// </summary>
+    private static string ComposeParticulars(string prefix, string? narration)
+    {
+        return string.IsNullOrWhiteSpace(narration)
+            ? prefix
+            : $"{prefix} - {narration}";
     }
 
     private static string ComputeRequestPayloadHash(WalletTransferRequest request)
