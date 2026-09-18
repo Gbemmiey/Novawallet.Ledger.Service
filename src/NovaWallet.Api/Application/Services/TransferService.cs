@@ -6,8 +6,10 @@ using NovaWallet.Api.Core.Models;
 using NovaWallet.Api.Core.Models.Response;
 using NovaWallet.Api.Core.Services;
 using NovaWallet.Api.Infrastructure.Data;
+using NovaWallet.Api.Infrastructure.Extensions.OpenTelemetry;
 using Npgsql;
 using StackExchange.Redis;
+using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -33,21 +35,47 @@ public sealed class TransferService : ITransferService
     private readonly ILogger<TransferService> _logger;
     private readonly NovaWalletDbContext _dbContext;
     private readonly IRequestContext _requestContext;
+    private readonly NovaWalletMetrics _metrics;
     private readonly IConnectionMultiplexer? _redisConnection;
 
     public TransferService(
         ILogger<TransferService> logger,
         NovaWalletDbContext dbContext,
         IRequestContext requestContext,
+        NovaWalletMetrics metrics,
         IConnectionMultiplexer? redisConnection = null)
     {
         _logger = logger;
         _dbContext = dbContext;
         _requestContext = requestContext;
+        _metrics = metrics;
         _redisConnection = redisConnection;
     }
 
+    /// <summary>
+    /// Thin, metrics-instrumented wrapper around <see cref="TransferCoreAsync"/> - times the
+    /// whole call and records <c>novawallet.transfer.requests</c>/<c>.duration</c> (tagged by
+    /// the resulting <see cref="IServiceApiResponse.ResponseCode"/>) plus
+    /// <c>novawallet.transfer.amount</c> on success, without touching the money-movement logic
+    /// itself.
+    /// </summary>
     public async Task<ServiceApiResponse<WalletTransferResponse>> Transfer(WalletTransferRequest request, CancellationToken cancellationToken)
+    {
+        var startTimestamp = Stopwatch.GetTimestamp();
+
+        var response = await TransferCoreAsync(request, cancellationToken);
+
+        _metrics.RecordTransfer(response.ResponseCode, Stopwatch.GetElapsedTime(startTimestamp));
+
+        if (response.ResponseCode == ResponseCodes.Success.ResponseCode && response.Data is not null)
+        {
+            _metrics.RecordTransferAmount(response.Data.AmountInKobo);
+        }
+
+        return response;
+    }
+
+    private async Task<ServiceApiResponse<WalletTransferResponse>> TransferCoreAsync(WalletTransferRequest request, CancellationToken cancellationToken)
     {
         // ---- Authentication ----
         var callerUserId = _requestContext.UserId;

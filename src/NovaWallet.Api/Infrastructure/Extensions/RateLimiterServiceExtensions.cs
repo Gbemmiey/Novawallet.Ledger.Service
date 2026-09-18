@@ -1,4 +1,5 @@
 ﻿using NovaWallet.Api.Core.Models.Response;
+using NovaWallet.Api.Infrastructure.Extensions.OpenTelemetry;
 using NovaWallet.Api.Infrastructure.Http;
 using System.Threading.RateLimiting;
 using static NovaWallet.Api.Core.Configuration.NovaWalletConstants;
@@ -15,6 +16,12 @@ namespace NovaWallet.Api.Infrastructure.Extensions
 
                 options.OnRejected = async (context, cancellationToken) =>
                 {
+                    // Tagged by request path rather than the matched policy name -
+                    // OnRejectedContext doesn't expose the policy name directly, and path is a
+                    // clean, bounded substitute across today's handful of rate-limited routes.
+                    var metrics = context.HttpContext.RequestServices.GetRequiredService<NovaWalletMetrics>();
+                    metrics.RecordRateLimitRejection(context.HttpContext.Request.Path.Value ?? "unknown");
+
                     context.HttpContext.Response.ContentType = "application/json";
 
                     var response = ServiceApiResponse<object>.CreateFailure(

@@ -5,6 +5,7 @@ using NovaWallet.Api.Application.Services;
 using NovaWallet.Api.Core.Options;
 using NovaWallet.Api.Core.Services;
 using NovaWallet.Api.Infrastructure.Data;
+using NovaWallet.Api.Infrastructure.Extensions.OpenTelemetry;
 using NovaWallet.Api.Infrastructure.Http;
 using NovaWallet.Api.Infrastructure.Providers;
 using NovaWallet.Api.Workers;
@@ -38,6 +39,7 @@ namespace NovaWallet.Api.Extensions
 
         public static IServiceCollection RegisterApplicationServices(this IServiceCollection services)
         {
+            services.AddSingleton<NovaWalletMetrics>();
             services.AddScoped<IAuthService, AuthService>();
             services.AddScoped<IMockUserAuthHelper, MockUserAuthHelper>();
             services.AddScoped<IWalletService, WalletService>();

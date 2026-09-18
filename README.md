@@ -316,6 +316,38 @@ CREATE INDEX "IX_LedgerSnapshot_IsBalanced_Partial"
 * **Observability:** OpenTelemetry Collector (forwarding to Grafana Cloud) + Prometheus — the app exports OTLP traces/metrics directly and Prometheus scrapes `/metrics` on the API itself regardless of whether a collector is present (the OTLP exporter is non-blocking/async on connection failure). The Collector's endpoint (`ObservabilityOptions__ExporterUri`) is fully config/env-driven via `OBSERVABILITY_EXPORTER_URI`. The Collector itself stays behind the opt-in `observability` Compose profile, not started by default, since pointing it at a real backend requires third-party Grafana Cloud credentials.
 * **Error Format:** RFC 7807 Problem Details
 
+### Custom Application Metrics
+
+Beyond the built-in OTel instrumentation (ASP.NET Core, HttpClient, EF Core, SQL, `Npgsql`,
+runtime, process), `NovaWalletMetrics` (`Infrastructure/Extensions/OpenTelemetry/NovaWalletMetrics.cs`)
+adds domain/business-level metrics via the BCL's `System.Diagnostics.Metrics` API — no extra
+NuGet package required. The `Meter` is registered into the same OTel `MeterProvider` pipeline
+(`.AddMeter(NovaWalletMetrics.MeterName)` in `OpenTelemetryConfigurationExtensions`), so every
+instrument below flows through the existing OTLP exporter and the optional Prometheus `/metrics`
+scrape endpoint (`EnablePrometheusMetricsEndpoint: true`) without any separate wiring:
+
+| Instrument | Type | Tags | What it measures |
+|---|---|---|---|
+| `novawallet.deposit.requests` | Counter | `response_code` | `POST /wallets/credit` webhook-accept requests |
+| `novawallet.deposit.request.duration` | Histogram (ms) | — | Webhook-accept-path latency |
+| `novawallet.deposit.settlements` | Counter | `outcome` | `DepositConsumer` settlement attempts (`settled`, `already_processed`, `skipped_not_pending`, `rejected_beneficiary_not_found`, `rejected_wallet_not_active`, `unique_violation_race`, `transient_failure`, `retries_exhausted`) |
+| `novawallet.deposit.settlement.duration` | Histogram (ms) | `outcome` | Settlement-attempt latency |
+| `novawallet.transfer.requests` | Counter | `response_code` | `POST /wallets/transfer` requests |
+| `novawallet.transfer.duration` | Histogram (ms) | `response_code` | End-to-end transfer latency |
+| `novawallet.transfer.amount` | Histogram (kobo) | — | Distribution of successfully-settled transfer amounts |
+| `novawallet.reconciliation.discrepancies` | Counter | — | Wallets found unbalanced per sweep |
+| `novawallet.reconciliation.wallets_frozen` | Counter | — | Auto-freezes actually claimed by `ReconciliationWorker` |
+| `novawallet.reconciliation.wallets_checked` | Counter | — | Sweep throughput |
+| `novawallet.reconciliation.sweep.duration` | Histogram (ms) | — | Per-tick sweep latency |
+| `novawallet.ratelimit.rejections` | Counter | `path` | HTTP 429 rejections, by route |
+
+Tagging is deliberately restricted to small, fixed vocabularies (`ResponseCode` strings, a
+handful of named outcomes, or a request path) — never caller-supplied values like wallet IDs or
+narrations — to avoid unbounded cardinality in the metrics backend. Instrumentation is applied at
+each public entry point via a thin timing wrapper around the existing implementation (renamed to
+a private `...CoreAsync`/`...Core...` method), so none of the money-movement logic itself was
+touched to add this.
+
 ---
 
 ## Getting Started

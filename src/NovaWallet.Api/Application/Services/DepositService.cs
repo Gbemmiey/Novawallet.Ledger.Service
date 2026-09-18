@@ -8,7 +8,9 @@ using NovaWallet.Api.Core.Models.Response;
 using NovaWallet.Api.Core.Services;
 using NovaWallet.Api.Infrastructure.Cache;
 using NovaWallet.Api.Infrastructure.Data;
+using NovaWallet.Api.Infrastructure.Extensions.OpenTelemetry;
 using Npgsql;
+using System.Diagnostics;
 
 namespace NovaWallet.Api.Application.Services
 {
@@ -25,15 +27,39 @@ namespace NovaWallet.Api.Application.Services
         private readonly ILogger<DepositService> _logger;
         private readonly NovaWalletDbContext _novaWalletDbContext;
         private readonly HybridCache _hybridCache;
+        private readonly NovaWalletMetrics _metrics;
 
-        public DepositService(ILogger<DepositService> logger, NovaWalletDbContext novaWalletDbContext, HybridCache hybridCache)
+        public DepositService(
+            ILogger<DepositService> logger,
+            NovaWalletDbContext novaWalletDbContext,
+            HybridCache hybridCache,
+            NovaWalletMetrics metrics)
         {
             _logger = logger;
             _novaWalletDbContext = novaWalletDbContext;
             _hybridCache = hybridCache;
+            _metrics = metrics;
         }
 
+        /// <summary>
+        /// Thin, metrics-instrumented wrapper around <see cref="SubmitDepositRequestCoreAsync"/> -
+        /// times the whole webhook-accept path and records
+        /// <c>novawallet.deposit.requests</c>/<c>.request.duration</c>, tagged by the resulting
+        /// <see cref="IServiceApiResponse.ResponseCode"/>, without touching the idempotency/DB
+        /// logic itself.
+        /// </summary>
         public async Task<ServiceApiResponse<NipSingleCreditResponse>> SubmitDepositRequest(NipSingleCreditRequest nipSingleCreditRequest, CancellationToken cancellationToken)
+        {
+            var startTimestamp = Stopwatch.GetTimestamp();
+
+            var response = await SubmitDepositRequestCoreAsync(nipSingleCreditRequest, cancellationToken);
+
+            _metrics.RecordDepositRequest(response.ResponseCode, Stopwatch.GetElapsedTime(startTimestamp));
+
+            return response;
+        }
+
+        private async Task<ServiceApiResponse<NipSingleCreditResponse>> SubmitDepositRequestCoreAsync(NipSingleCreditRequest nipSingleCreditRequest, CancellationToken cancellationToken)
         {
             try
             {

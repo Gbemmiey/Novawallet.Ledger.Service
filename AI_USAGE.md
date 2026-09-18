@@ -154,6 +154,37 @@ partitioned by the caller's JWT `sub` claim (safe to key on identity rather
 than IP specifically because `UseAuthorization()` precedes `UseRateLimiter()`
 in `Program.cs`'s pipeline).
 
+### Prompt 4 — "Add custom metrics to the application"
+
+Before writing any instrumentation code, the AI re-read the existing OTel wiring
+(`OpenTelemetryConfigurationExtensions`, `ObservabilityOptions`) and confirmed that
+`System.Diagnostics.Metrics` (`Meter`/`Counter<T>`/`Histogram<T>`) needs no new NuGet
+package — it's part of the BCL since .NET 6 — and that a custom `Meter` just needs
+`.AddMeter("<name>")` added next to the existing `.AddMeter("Npgsql")` line to flow through the
+exact same OTLP/Prometheus pipeline already working, rather than standing up a second exporter
+path.
+
+Given `dotnet build` had been unrunnable via any tool for the entire session up to this point,
+the AI deliberately chose the lowest-risk instrumentation shape available: wrap each public
+service/worker entry point exactly once (rename the existing method body to a private
+`...CoreAsync`/`...Core...` method, add a thin public wrapper that times the call and records one
+counter+histogram pair) rather than threading metric-recording calls through the 10-15
+individual `return` statements inside `TransferService.ProcessTransferAsync` or
+`DepositConsumer.ProcessOutboxEntryAsync`. This gets full outcome+latency coverage per operation
+without touching the money-movement logic itself — the same "don't risk what you can't compile"
+discipline that shaped every other change this session. One exception to the wrap-once shape:
+`DepositConsumer.ProcessOutboxEntryAsync` already had several named internal branches (beneficiary
+not found, wallet not Active, self-healed already-completed, etc.), so a closure-captured
+`outcomeLabel` string was set at each existing `return` point instead of collapsing them all into
+one generic label — preserving the granularity the code already expressed rather than flattening
+it for instrumentation's sake.
+
+Tagging discipline was treated as a first-class design decision, not an afterthought:
+`ServiceApiResponse.ResponseCode` (a numeric HTTP-status-shaped string) was identified as a clean,
+low-cardinality, already-existing tag, while `ResponseMessage` was explicitly ruled out as a tag
+source since it sometimes interpolates dynamic content (wallet IDs, statuses) — an unbounded-
+cardinality trap that would have quietly degraded the metrics backend over time.
+
 ## A specific case where AI output was wrong/unsafe for a financial system
 
 **The daily transfer limit's `INSERT` branch didn't enforce the limit.**

@@ -4,6 +4,8 @@ using NovaWallet.Api.Core.Enums;
 using NovaWallet.Api.Core.Models;
 using NovaWallet.Api.Core.Options;
 using NovaWallet.Api.Infrastructure.Data;
+using NovaWallet.Api.Infrastructure.Extensions.OpenTelemetry;
+using System.Diagnostics;
 using UUIDNext;
 
 namespace NovaWallet.Api.Workers
@@ -65,6 +67,7 @@ namespace NovaWallet.Api.Workers
         private readonly IServiceScopeFactory _scopeFactory;
         private readonly ILogger<ReconciliationWorker> _logger;
         private readonly ReconciliationWorkerOptions _options;
+        private readonly NovaWalletMetrics _metrics;
 
         // In-memory keyset cursor - see class remarks. Guid.Empty is the numeric minimum UUID,
         // so "Id > cursor" starting from Guid.Empty matches every wallet on the first sweep.
@@ -73,11 +76,13 @@ namespace NovaWallet.Api.Workers
         public ReconciliationWorker(
             IServiceScopeFactory scopeFactory,
             ILogger<ReconciliationWorker> logger,
-            IOptions<ReconciliationWorkerOptions> options)
+            IOptions<ReconciliationWorkerOptions> options,
+            NovaWalletMetrics metrics)
         {
             _scopeFactory = scopeFactory;
             _logger = logger;
             _options = options.Value;
+            _metrics = metrics;
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -123,7 +128,21 @@ namespace NovaWallet.Api.Workers
         private sealed record WalletReconciliationRow(
             Guid WalletId, Guid AccountId, int Status, long WalletBalanceKobo, long LedgerBalanceKobo);
 
+        /// <summary>
+        /// Thin, metrics-instrumented wrapper around <see cref="ProcessSweepTickCoreAsync"/> -
+        /// times the whole tick and records <c>novawallet.reconciliation.sweep.duration</c>,
+        /// without touching the sweep/freeze logic itself.
+        /// </summary>
         private async Task ProcessSweepTickAsync(CancellationToken cancellationToken)
+        {
+            var startTimestamp = Stopwatch.GetTimestamp();
+
+            await ProcessSweepTickCoreAsync(cancellationToken);
+
+            _metrics.RecordReconciliationSweepDuration(Stopwatch.GetElapsedTime(startTimestamp));
+        }
+
+        private async Task ProcessSweepTickCoreAsync(CancellationToken cancellationToken)
         {
             await using var scope = _scopeFactory.CreateAsyncScope();
             var db = scope.ServiceProvider.GetRequiredService<NovaWalletDbContext>();
@@ -162,6 +181,8 @@ namespace NovaWallet.Api.Workers
                 return;
             }
 
+            _metrics.RecordWalletsChecked(batch.Count);
+
             var runId = Uuid.NewSequential();
             var strategy = db.Database.CreateExecutionStrategy();
 
@@ -183,12 +204,16 @@ namespace NovaWallet.Api.Workers
                             continue;
                         }
 
+                        _metrics.RecordReconciliationDiscrepancy();
+
                         if (row.Status == (int)WalletStatus.Active && _options.AutoFreezeOnDiscrepancy)
                         {
                             var frozen = await TryFreezeWalletAtomicAsync(db, row.WalletId, cancellationToken);
 
                             if (frozen)
                             {
+                                _metrics.RecordWalletFrozen();
+
                                 db.AuditLogs.Add(AuditLog.Create(
                                     walletId: row.WalletId,
                                     actorSubject: "system:reconciliation",

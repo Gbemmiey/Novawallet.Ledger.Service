@@ -5,7 +5,9 @@ using NovaWallet.Api.Core.Enums;
 using NovaWallet.Api.Core.Models;
 using NovaWallet.Api.Core.Options;
 using NovaWallet.Api.Infrastructure.Data;
+using NovaWallet.Api.Infrastructure.Extensions.OpenTelemetry;
 using Npgsql;
+using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -71,15 +73,18 @@ namespace NovaWallet.Api.Workers
         private readonly IServiceScopeFactory _scopeFactory;
         private readonly ILogger<DepositConsumer> _logger;
         private readonly DepositConsumerOptions _options;
+        private readonly NovaWalletMetrics _metrics;
 
         public DepositConsumer(
             IServiceScopeFactory scopeFactory,
             ILogger<DepositConsumer> logger,
-            IOptions<DepositConsumerOptions> options)
+            IOptions<DepositConsumerOptions> options,
+            NovaWalletMetrics metrics)
         {
             _scopeFactory = scopeFactory;
             _logger = logger;
             _options = options.Value;
+            _metrics = metrics;
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -168,6 +173,13 @@ namespace NovaWallet.Api.Workers
         private async Task ProcessOutboxEntryAsync(NovaWalletDbContext db, Guid outboxId, CancellationToken cancellationToken)
         {
             var strategy = db.Database.CreateExecutionStrategy();
+            var startTimestamp = Stopwatch.GetTimestamp();
+
+            // Set by whichever branch below actually returns/throws, so the single metrics
+            // recording call after strategy.ExecuteAsync below can tag the settlement
+            // counter/duration with a specific outcome rather than only the coarse
+            // Handled/TransientFailure distinction the retry-bookkeeping caller needs.
+            var outcomeLabel = "unknown";
 
             var outcome = await strategy.ExecuteAsync(async () =>
             {
@@ -185,6 +197,7 @@ namespace NovaWallet.Api.Workers
                     if (outbox is null || outbox.Status != OutboxStatus.Pending)
                     {
                         await transaction.RollbackAsync(CancellationToken.None);
+                        outcomeLabel = "skipped_not_pending";
                         return SettlementOutcome.Handled;
                     }
 
@@ -203,6 +216,7 @@ namespace NovaWallet.Api.Workers
                             "DepositOutbox {DepositOutboxId} pointed at an already-completed ExternalCreditRequest {SessionId}. Marked Processed without reposting.",
                             outbox.Id,
                             externalCreditRequest.SessionId);
+                        outcomeLabel = "already_processed";
                         return SettlementOutcome.Handled;
                     }
 
@@ -226,6 +240,7 @@ namespace NovaWallet.Api.Workers
                             outbox.Id,
                             externalCreditRequest.BeneficiaryAccountNumber,
                             externalCreditRequest.SessionId);
+                        outcomeLabel = "rejected_beneficiary_not_found";
                         return SettlementOutcome.Handled;
                     }
 
@@ -278,6 +293,7 @@ namespace NovaWallet.Api.Workers
                                 beneficiary.Id,
                                 status?.ToString() ?? "no longer found",
                                 externalCreditRequest.SessionId);
+                            outcomeLabel = "rejected_wallet_not_active";
                             return SettlementOutcome.Handled;
                         }
 
@@ -319,6 +335,7 @@ namespace NovaWallet.Api.Workers
                         externalCreditRequest.AmountKobo,
                         journalEntry.Id);
 
+                    outcomeLabel = "settled";
                     return SettlementOutcome.Handled;
                 }
                 catch (OperationCanceledException)
@@ -337,6 +354,7 @@ namespace NovaWallet.Api.Workers
                         "Deposit settlement lost a unique-constraint race despite row locking for DepositOutbox {DepositOutboxId}. Treating as already-handled.",
                         outboxId);
 
+                    outcomeLabel = "unique_violation_race";
                     return SettlementOutcome.Handled;
                 }
                 catch (Exception ex)
@@ -350,9 +368,13 @@ namespace NovaWallet.Api.Workers
                         "Failed to settle DepositOutbox {DepositOutboxId} due to a transient error. Recording a failed attempt.",
                         outboxId);
 
+                    outcomeLabel = "transient_failure";
                     return SettlementOutcome.TransientFailure;
                 }
             });
+
+            _metrics.RecordDepositSettlement(outcomeLabel);
+            _metrics.RecordDepositSettlementDuration(outcomeLabel, Stopwatch.GetElapsedTime(startTimestamp));
 
             if (outcome == SettlementOutcome.TransientFailure)
             {
@@ -411,6 +433,8 @@ namespace NovaWallet.Api.Workers
                             outbox.Id,
                             DepositOutbox.MaxRetries,
                             externalCreditRequest.SessionId);
+
+                        _metrics.RecordDepositSettlement("retries_exhausted");
                     }
 
                     await db.SaveChangesAsync(cancellationToken);
