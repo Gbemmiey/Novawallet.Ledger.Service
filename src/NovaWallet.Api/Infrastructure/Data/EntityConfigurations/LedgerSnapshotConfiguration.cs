@@ -39,6 +39,12 @@ namespace NovaWallet.Api.Infrastructure.Data.EntityConfigurations
             builder.Property(s => s.CreatedAt)
                 .IsRequired();
 
+            // Nullable incremental-reconciliation watermark - see LedgerSnapshot's and
+            // ReconciliationWorker's remarks. Deliberately not an FK: AccountEntries are
+            // append-only/never deleted, so referential integrity is not at risk, and this is a
+            // point-in-time cursor value rather than a real ownership relationship.
+            builder.Property(s => s.LastAccountEntryId);
+
             builder.HasOne(s => s.Wallet)
                 .WithMany()
                 .HasForeignKey(s => s.WalletId)

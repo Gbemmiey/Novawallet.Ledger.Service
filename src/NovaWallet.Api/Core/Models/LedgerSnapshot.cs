@@ -8,8 +8,10 @@ namespace NovaWallet.Api.Core.Models
     /// Wallet.AvailableBalanceKobo == Sum(AccountEntries.Credit) - Sum(AccountEntries.Debit)
     /// for the wallet's own Account (README §3). Every wallet checked in a sweep gets a row -
     /// balanced or not - so this table doubles as a full historical timeline of ledger health,
-    /// not just an alert log. Fully immutable: there is no mutation method on this type, and no
-    /// UPDATE/DELETE is issued against it anywhere in the codebase.
+    /// not just an alert log. Each row also carries <see cref="LastAccountEntryId"/>, the
+    /// watermark the next sweep uses to reconcile only the AccountEntries posted after this
+    /// snapshot rather than the account's entire history. Fully immutable: there is no mutation
+    /// method on this type, and no UPDATE/DELETE is issued against it anywhere in the codebase.
     /// </summary>
     public class LedgerSnapshot
     {
@@ -27,8 +29,11 @@ namespace NovaWallet.Api.Core.Models
         /// <summary>Wallet.AvailableBalanceKobo at the instant this snapshot was taken.</summary>
         public long WalletBalanceKobo { get; }
 
-        /// <summary>Sum(Credit) - Sum(Debit) over AccountEntries for AccountId, read from the
-        /// same SQL statement/MVCC snapshot as WalletBalanceKobo.</summary>
+        /// <summary>Sum(Credit) - Sum(Debit) over all AccountEntries for AccountId, as of this
+        /// snapshot. Computed incrementally as LastSnapshot.LedgerBalanceKobo + Sum(entries newer
+        /// than LastAccountEntryId) rather than re-summing the full history every time (see
+        /// ReconciliationWorker remarks) - the resulting value is exactly the same total either
+        /// way, and is still read from the same SQL statement/MVCC snapshot as WalletBalanceKobo.</summary>
         public long LedgerBalanceKobo { get; }
 
         /// <summary>WalletBalanceKobo - LedgerBalanceKobo. Zero means balanced.</summary>
@@ -36,8 +41,18 @@ namespace NovaWallet.Api.Core.Models
         public bool IsBalanced { get; }
         public DateTime CreatedAt { get; }
 
+        /// <summary>The highest <see cref="AccountEntry.Id"/> folded into this snapshot's
+        /// <see cref="LedgerBalanceKobo"/> - the incremental-reconciliation watermark.
+        /// <see langword="null"/> means the account had zero <see cref="AccountEntry"/> rows as of
+        /// this snapshot. <see cref="NovaWallet.Api.Workers.ReconciliationWorker"/> uses this to
+        /// only sum entries newer than the wallet's last snapshot on the next sweep, instead of
+        /// re-summing the account's entire history every tick - see its class remarks for the
+        /// full rationale and the one known race-window caveat.</summary>
+        public Guid? LastAccountEntryId { get; }
+
         private LedgerSnapshot(Guid id, Guid runId, Guid walletId, Guid accountId,
-            long walletBalanceKobo, long ledgerBalanceKobo, long discrepancyKobo, bool isBalanced, DateTime createdAt)
+            long walletBalanceKobo, long ledgerBalanceKobo, long discrepancyKobo, bool isBalanced,
+            DateTime createdAt, Guid? lastAccountEntryId)
         {
             Id = id;
             RunId = runId;
@@ -48,10 +63,11 @@ namespace NovaWallet.Api.Core.Models
             DiscrepancyKobo = discrepancyKobo;
             IsBalanced = isBalanced;
             CreatedAt = createdAt;
+            LastAccountEntryId = lastAccountEntryId;
         }
 
         public static LedgerSnapshot Create(Guid runId, Guid walletId, Guid accountId,
-            long walletBalanceKobo, long ledgerBalanceKobo)
+            long walletBalanceKobo, long ledgerBalanceKobo, Guid? lastAccountEntryId)
         {
             if (runId == Guid.Empty) throw new ArgumentException("RunId is required.", nameof(runId));
             if (walletId == Guid.Empty) throw new ArgumentException("WalletId is required.", nameof(walletId));
@@ -68,7 +84,8 @@ namespace NovaWallet.Api.Core.Models
                 ledgerBalanceKobo: ledgerBalanceKobo,
                 discrepancyKobo: discrepancyKobo,
                 isBalanced: discrepancyKobo == 0,
-                createdAt: DateTime.UtcNow);
+                createdAt: DateTime.UtcNow,
+                lastAccountEntryId: lastAccountEntryId);
         }
     }
 }

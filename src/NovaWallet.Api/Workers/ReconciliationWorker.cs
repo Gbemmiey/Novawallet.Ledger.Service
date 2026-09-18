@@ -30,15 +30,39 @@ namespace NovaWallet.Api.Workers
     /// finds zero rows affected and logs the discrepancy without claiming the freeze.
     /// </para>
     /// <para>
-    /// <b>Consistency guarantee behind immediate auto-freeze:</b> each batch is read via a single
-    /// SQL statement joining <c>Wallets</c> to a correlated <c>SUM</c> over <c>AccountEntries</c>.
-    /// A single Postgres statement always sees one consistent MVCC snapshot, so
-    /// <c>WalletBalanceKobo</c> and <c>LedgerBalanceKobo</c> are read at the exact same instant -
-    /// no read-skew false positives from an in-flight transfer. And because every write to
-    /// <c>Wallets.AvailableBalanceKobo</c> and its paired <c>AccountEntries</c> happens inside one
-    /// DB transaction (<c>TransferService</c>/<c>DepositConsumer</c>), Postgres guarantees both
-    /// become visible together or not at all. A discrepancy this worker finds therefore reflects
-    /// an actual bug, not a race - which is what justifies freezing without a grace period.
+    /// <b>Incremental reconciliation:</b> rather than re-summing an account's entire
+    /// <c>AccountEntries</c> history on every tick, each wallet's ledger balance is computed as
+    /// <c>LastSnapshot.LedgerBalanceKobo + Sum(new entries posted since LastSnapshot)</c>, using
+    /// the wallet's most recent <see cref="LedgerSnapshot"/> (found via <c>LedgerSnapshot</c>'s own
+    /// <c>IX_LedgerSnapshot_WalletId_CreatedAt</c> index) as the baseline and
+    /// <see cref="LedgerSnapshot.LastAccountEntryId"/> as the "already accounted for" watermark -
+    /// <c>AccountEntries.Id</c> is a sequential UUID (<c>Uuid.NewSequential()</c>), so, exactly
+    /// like the wallet keyset cursor above, comparing IDs is a valid monotonic ordering. A wallet
+    /// with no prior snapshot sums its whole history once (first sweep only); every sweep after
+    /// that only touches entries newer than the watermark, so per-tick cost stays roughly constant
+    /// as an account's lifetime transaction count grows, instead of scaling with it.
+    /// <b>Known limitation:</b> because <c>AccountEntry.Id</c> is generated client-side at
+    /// construction time rather than by a DB sequence assigned at commit, two concurrent postings
+    /// could - in a narrow window - commit out of ID order (the numerically-lower-ID transaction
+    /// commits after the higher-ID one). If a sweep's watermark lands between those two commits,
+    /// the lower-ID entry would be permanently skipped by every future incremental sum. This is
+    /// not corrected automatically today; a time-based grace-period watermark (only advancing the
+    /// cursor past entries older than e.g. a few seconds) would close this gap and is a reasonable
+    /// follow-up if it's ever observed in practice.
+    /// </para>
+    /// <para>
+    /// <b>Consistency guarantee behind immediate auto-freeze:</b> despite being incremental, each
+    /// batch is still read via a single SQL statement - <c>Wallets</c> LEFT JOIN LATERAL'd to each
+    /// wallet's latest <c>LedgerSnapshot</c> baseline and a correlated <c>SUM</c> over only the
+    /// AccountEntries newer than that baseline. A single Postgres statement always sees one
+    /// consistent MVCC snapshot, so <c>WalletBalanceKobo</c> and the freshly-computed
+    /// <c>LedgerBalanceKobo</c> are read at the exact same instant - no read-skew false positives
+    /// from an in-flight transfer. And because every write to <c>Wallets.AvailableBalanceKobo</c>
+    /// and its paired <c>AccountEntries</c> happens inside one DB transaction
+    /// (<c>TransferService</c>/<c>DepositConsumer</c>), Postgres guarantees both become visible
+    /// together or not at all. A discrepancy this worker finds therefore reflects an actual bug,
+    /// not a race - which is what justifies freezing without a grace period (subject to the one
+    /// known limitation immediately above).
     /// </para>
     /// <para>
     /// <b>Freeze behavior:</b> a wallet found unbalanced while still <see cref="WalletStatus.Active"/>
@@ -126,7 +150,8 @@ namespace NovaWallet.Api.Workers
         /// raw SQL projection rather than an entity-mapped query - callers cast explicitly.
         /// </summary>
         private sealed record WalletReconciliationRow(
-            Guid WalletId, Guid AccountId, int Status, long WalletBalanceKobo, long LedgerBalanceKobo);
+            Guid WalletId, Guid AccountId, int Status, long WalletBalanceKobo, long LedgerBalanceKobo,
+            Guid? LastAccountEntryId);
 
         /// <summary>
         /// Thin, metrics-instrumented wrapper around <see cref="ProcessSweepTickCoreAsync"/> -
@@ -152,23 +177,43 @@ namespace NovaWallet.Api.Workers
 
             // Single set-based raw SQL query for the whole batch (EF Core 8's Database.SqlQuery<T>
             // support for non-scalar types - the same mechanism already used elsewhere in this
-            // codebase via SqlQuery<long> for the atomic guarded balance UPDATEs). Wallets is
-            // LEFT JOINed to AccountEntries and grouped so WalletBalanceKobo and LedgerBalanceKobo
-            // are both read from one Postgres statement - one consistent MVCC snapshot (see class
-            // remarks on why that justifies immediate auto-freeze). No entity tracking applies
-            // here since nothing in this query is mutated via EF - the freeze below is a separate
-            // raw guarded UPDATE, same pattern as the hot balance paths.
+            // codebase via SqlQuery<long> for the atomic guarded balance UPDATEs). Incremental
+            // reconciliation (see class remarks): a LATERAL join finds each wallet's latest
+            // LedgerSnapshot as a baseline (LedgerBalanceKobo + the LastAccountEntryId watermark),
+            // and a second LATERAL join sums only the AccountEntries posted *after* that watermark
+            // - never the account's entire history once a wallet has been snapshotted once. A
+            // wallet with no prior snapshot (prior.LastAccountEntryId IS NULL) falls back to a
+            // full-history sum, which only ever happens once per wallet, on its first sweep. The
+            // whole read - current wallet balance, prior baseline, and the new delta - is still one
+            // Postgres statement, so it's still one consistent MVCC snapshot (see class remarks on
+            // why that justifies immediate auto-freeze). No entity tracking applies here since
+            // nothing in this query is mutated via EF - the freeze below is a separate raw guarded
+            // UPDATE, same pattern as the hot balance paths.
             var batch = await db.Database.SqlQuery<WalletReconciliationRow>($@"
                 SELECT
                     w.""Id"" AS ""WalletId"",
                     w.""AccountId"" AS ""AccountId"",
                     w.""Status"" AS ""Status"",
                     w.""AvailableBalanceKobo"" AS ""WalletBalanceKobo"",
-                    COALESCE(SUM(CASE WHEN ae.""EntryType"" = 'Credit' THEN ae.""AmountKobo"" ELSE -ae.""AmountKobo"" END), 0) AS ""LedgerBalanceKobo""
+                    COALESCE(prior.""LedgerBalanceKobo"", 0) + COALESCE(delta.""DeltaKobo"", 0) AS ""LedgerBalanceKobo"",
+                    COALESCE(delta.""MaxEntryId"", prior.""LastAccountEntryId"") AS ""LastAccountEntryId""
                 FROM ""Wallets"" w
-                LEFT JOIN ""AccountEntries"" ae ON ae.""AccountId"" = w.""AccountId""
+                LEFT JOIN LATERAL (
+                    SELECT ls.""LedgerBalanceKobo"", ls.""LastAccountEntryId""
+                    FROM ""LedgerSnapshot"" ls
+                    WHERE ls.""WalletId"" = w.""Id""
+                    ORDER BY ls.""CreatedAt"" DESC, ls.""Id"" DESC
+                    LIMIT 1
+                ) prior ON TRUE
+                LEFT JOIN LATERAL (
+                    SELECT
+                        SUM(CASE WHEN ae.""EntryType"" = 'Credit' THEN ae.""AmountKobo"" ELSE -ae.""AmountKobo"" END) AS ""DeltaKobo"",
+                        MAX(ae.""Id"") AS ""MaxEntryId""
+                    FROM ""AccountEntries"" ae
+                    WHERE ae.""AccountId"" = w.""AccountId""
+                      AND (prior.""LastAccountEntryId"" IS NULL OR ae.""Id"" > prior.""LastAccountEntryId"")
+                ) delta ON TRUE
                 WHERE w.""Id"" > {cursor}
-                GROUP BY w.""Id"", w.""AccountId"", w.""Status"", w.""AvailableBalanceKobo""
                 ORDER BY w.""Id""
                 LIMIT {batchSize}")
                 .ToListAsync(cancellationToken);
@@ -195,7 +240,8 @@ namespace NovaWallet.Api.Workers
                     foreach (var row in batch)
                     {
                         var snapshot = LedgerSnapshot.Create(
-                            runId, row.WalletId, row.AccountId, row.WalletBalanceKobo, row.LedgerBalanceKobo);
+                            runId, row.WalletId, row.AccountId, row.WalletBalanceKobo, row.LedgerBalanceKobo,
+                            row.LastAccountEntryId);
 
                         db.LedgerSnapshots.Add(snapshot);
 
