@@ -148,6 +148,10 @@ Implementing it exposed a design constraint I hadn't stated up front: the wallet
 
 Also found and fixed two defects in my own Prompt 13 query while rewriting it, neither caught because `dotnet build`/the query has never been run in this environment: Postgres has no `MAX(uuid)` aggregate (replaced with `ORDER BY ... LIMIT 1`), and `SUM(bigint)` returns `numeric`, which would not materialize into a `long` (added `::bigint` casts). Both are still unexecuted — worth running the worker against a real Postgres. Prompt 13's text above is left as written; its "known limitation" is now resolved by this entry. The remaining assumption (documented in code and README) is that no posting transaction outlives the grace period.
 
+#### Prompt 15 — "There's a bug in ReconciliationWorker - it is still repeating records" (pasted `LedgerSnapshot` rows)
+
+The pasted rows showed correct balances (ledger 0 → 1000 exactly once) but an identical row per tick per idle wallet: with no new entries, `COALESCE(safe.SafeMaxId, prior.LastAccountEntryId)` carries the same watermark forward, and the worker inserted a snapshot unconditionally. That was a deliberate Prompt 13 choice ("full historical timeline") whose cost I hadn't sized — wallets × 1440 rows/day at a 60s poll, nearly all noise. Fix: every wallet is still checked each sweep, but a row is written only when it is the wallet's first, the watermark advanced, the wallet is unbalanced, or `SnapshotHeartbeatMinutes` (default 60, 0 = off) has elapsed since its last row. The query now also returns the prior snapshot's existence, watermark and `CreatedAt`. Skipping a write doesn't affect the incremental maths because the baseline is always the last row actually written. No schema change. Still not compiled or run against Postgres.
+
 ### Documentation and review (claude.ai)
 
 **Gap review against the brief.**

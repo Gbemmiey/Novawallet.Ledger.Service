@@ -85,11 +85,14 @@ namespace NovaWallet.Api.Workers
     /// auto-frozen here requires manual/admin intervention.
     /// </para>
     /// <para>
-    /// <b>Snapshot volume:</b> every wallet checked in a sweep gets a <see cref="LedgerSnapshot"/>
-    /// row, balanced or not, giving a full historical timeline for auditors/graphing drift rather
-    /// than only an alert-only log. This means the table grows continuously, bounded by
-    /// BatchSize x sweeps/day x wallet count; retention/pruning would be a natural follow-up, not
-    /// implemented here.
+    /// <b>Snapshot volume:</b> every wallet is checked every sweep, but a <see cref="LedgerSnapshot"/>
+    /// row is only written when it carries information: the wallet has no prior snapshot, its
+    /// watermark advanced, it is unbalanced (so discrepancy history and the freeze audit link are
+    /// always recorded), or <see cref="ReconciliationWorkerOptions.SnapshotHeartbeatMinutes"/> has
+    /// elapsed since its last row (a proof-of-life for idle wallets). Skipping a write never skips
+    /// the comparison, and the next sweep's baseline is the last row actually written, so the
+    /// incremental maths is unaffected. Growth is therefore per state change, not per tick;
+    /// retention/pruning is still a natural follow-up, not implemented here.
     /// </para>
     /// </remarks>
     public sealed class ReconciliationWorker : BackgroundService
@@ -157,7 +160,8 @@ namespace NovaWallet.Api.Workers
         /// </summary>
         private sealed record WalletReconciliationRow(
             Guid WalletId, Guid AccountId, int Status, long WalletBalanceKobo, long LedgerBalanceKobo,
-            Guid? LastAccountEntryId, long WatermarkBalanceKobo);
+            Guid? LastAccountEntryId, long WatermarkBalanceKobo,
+            bool HasPriorSnapshot, Guid? PriorLastAccountEntryId, DateTime? PriorCreatedAt);
 
         /// <summary>
         /// Thin, metrics-instrumented wrapper around <see cref="ProcessSweepTickCoreAsync"/> -
@@ -180,7 +184,11 @@ namespace NovaWallet.Api.Workers
 
             var batchSize = Math.Max(1, _options.BatchSize);
             var cursor = _cursor;
-            var graceCutoff = DateTime.UtcNow - TimeSpan.FromSeconds(Math.Max(0, _options.WatermarkGracePeriodSeconds));
+            var now = DateTime.UtcNow;
+            var graceCutoff = now - TimeSpan.FromSeconds(Math.Max(0, _options.WatermarkGracePeriodSeconds));
+            DateTime? heartbeatCutoff = _options.SnapshotHeartbeatMinutes > 0
+                ? now - TimeSpan.FromMinutes(_options.SnapshotHeartbeatMinutes)
+                : null;
 
             // Single set-based raw SQL query for the whole batch (EF Core 8's Database.SqlQuery<T>
             // support for non-scalar types - the same mechanism already used elsewhere in this
@@ -204,10 +212,14 @@ namespace NovaWallet.Api.Workers
                     w.""AvailableBalanceKobo"" AS ""WalletBalanceKobo"",
                     (COALESCE(prior.""WatermarkBalanceKobo"", 0) + COALESCE(delta.""DeltaKobo"", 0))::bigint AS ""LedgerBalanceKobo"",
                     COALESCE(safe.""SafeMaxId"", prior.""LastAccountEntryId"") AS ""LastAccountEntryId"",
-                    (COALESCE(prior.""WatermarkBalanceKobo"", 0) + COALESCE(delta.""SafeDeltaKobo"", 0))::bigint AS ""WatermarkBalanceKobo""
+                    (COALESCE(prior.""WatermarkBalanceKobo"", 0) + COALESCE(delta.""SafeDeltaKobo"", 0))::bigint AS ""WatermarkBalanceKobo"",
+                    (prior.""PriorId"" IS NOT NULL) AS ""HasPriorSnapshot"",
+                    prior.""LastAccountEntryId"" AS ""PriorLastAccountEntryId"",
+                    prior.""PriorCreatedAt"" AS ""PriorCreatedAt""
                 FROM ""Wallets"" w
                 LEFT JOIN LATERAL (
-                    SELECT ls.""WatermarkBalanceKobo"", ls.""LastAccountEntryId""
+                    SELECT ls.""Id"" AS ""PriorId"", ls.""CreatedAt"" AS ""PriorCreatedAt"",
+                           ls.""WatermarkBalanceKobo"", ls.""LastAccountEntryId""
                     FROM ""LedgerSnapshot"" ls
                     WHERE ls.""WalletId"" = w.""Id""
                     ORDER BY ls.""CreatedAt"" DESC, ls.""Id"" DESC
@@ -266,7 +278,13 @@ namespace NovaWallet.Api.Workers
                             runId, row.WalletId, row.AccountId, row.WalletBalanceKobo, row.LedgerBalanceKobo,
                             row.LastAccountEntryId, row.WatermarkBalanceKobo);
 
-                        db.LedgerSnapshots.Add(snapshot);
+                        // Every wallet is still checked, but a row is only persisted when it
+                        // carries information (see "Snapshot volume" in the class remarks).
+                        // The next sweep's baseline is simply the last row that was written.
+                        if (!snapshot.IsBalanced || ShouldPersistSnapshot(row, heartbeatCutoff))
+                        {
+                            db.LedgerSnapshots.Add(snapshot);
+                        }
 
                         if (snapshot.IsBalanced)
                         {
@@ -344,6 +362,23 @@ namespace NovaWallet.Api.Workers
             // against the same batch next time rather than silently skipping it. Wrap back to
             // the start once a short batch signals the end of the table was reached.
             _cursor = batch.Count < batchSize ? Guid.Empty : batch[^1].WalletId;
+        }
+
+        /// <summary>
+        /// Decides whether a <i>balanced</i> wallet's snapshot is worth persisting: yes if it has
+        /// never been snapshotted, if its watermark moved, or if the heartbeat interval has elapsed
+        /// since its last row. Unbalanced wallets are always persisted by the caller.
+        /// </summary>
+        private static bool ShouldPersistSnapshot(WalletReconciliationRow row, DateTime? heartbeatCutoff)
+        {
+            if (!row.HasPriorSnapshot || row.LastAccountEntryId != row.PriorLastAccountEntryId)
+            {
+                return true;
+            }
+
+            return heartbeatCutoff.HasValue
+                && row.PriorCreatedAt.HasValue
+                && row.PriorCreatedAt.Value <= heartbeatCutoff.Value;
         }
 
         /// <summary>

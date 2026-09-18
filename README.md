@@ -281,9 +281,9 @@ CREATE INDEX "IX_WalletTransfers_DestinationWalletId_TransactionDate"
 -- Amount guard backstop, independent of application-layer validation
 ALTER TABLE "ExternalCreditRequests" ADD CONSTRAINT "CHK_ExternalCredit_AmountPositive" CHECK ("AmountKobo" > 0);
 
--- Insert-only reconciliation record, one row per wallet per sweep tick (README §3), written by
--- ReconciliationWorker. Every wallet checked in a sweep gets a row, balanced or not, so this
--- doubles as a full historical timeline of ledger health rather than only an alert log.
+-- Insert-only reconciliation record (README §3), written by ReconciliationWorker. Every wallet is
+-- checked each sweep, but a row is only written on first check, when the watermark advances, on any
+-- discrepancy, or as an idle heartbeat (SnapshotHeartbeatMinutes) - not once per wallet per tick.
 CREATE TABLE "LedgerSnapshot" (
     "Id" UUID PRIMARY KEY,
     "RunId" UUID NOT NULL,                 -- groups every wallet checked in one sweep tick

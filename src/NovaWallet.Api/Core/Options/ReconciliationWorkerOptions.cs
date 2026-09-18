@@ -13,7 +13,8 @@ namespace NovaWallet.Api.Core.Options
     ///     "PollingIntervalSeconds": 60,
     ///     "BatchSize": 200,
     ///     "AutoFreezeOnDiscrepancy": true,
-    ///     "WatermarkGracePeriodSeconds": 60
+    ///     "WatermarkGracePeriodSeconds": 60,
+    ///     "SnapshotHeartbeatMinutes": 60
     ///   }
     /// }
     /// </code>
@@ -54,5 +55,13 @@ namespace NovaWallet.Api.Core.Options
         /// watermark. Default: 60 seconds.
         /// </summary>
         public int WatermarkGracePeriodSeconds { get; set; } = 60;
+
+        /// <summary>
+        /// Gets or sets how often, in minutes, a balanced wallet with no new activity still gets a
+        /// proof-of-life <c>LedgerSnapshot</c> row. Without it, idle balanced wallets are checked
+        /// every sweep but only written when their watermark moves. 0 disables the heartbeat.
+        /// Default: 60 minutes.
+        /// </summary>
+        public int SnapshotHeartbeatMinutes { get; set; } = 60;
     }
 }
