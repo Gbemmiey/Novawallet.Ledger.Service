@@ -10,22 +10,31 @@ processors:
   batch:
 
 exporters:
-  otlphttp/grafana:
-    endpoint: '${env:GRAFANA_CLOUD_OTLP_ENDPOINT}'
+  # Local OpenObserve instance (see docker-compose.yml, `observability` profile). Unlike
+  # Grafana Cloud's single generic OTLP gateway endpoint, OpenObserve expects
+  # distinct per-signal HTTP paths (/v1/traces, /v1/metrics, /v1/logs) under
+  # its org-scoped API — the otlphttp exporter supports this natively via the
+  # traces_endpoint/metrics_endpoint/logs_endpoint overrides, no new exporter
+  # component needed.
+  otlphttp/openobserve:
+    endpoint: 'http://openobserve:5080/api/${env:OPENOBSERVE_ORG}'
+    traces_endpoint: 'http://openobserve:5080/api/${env:OPENOBSERVE_ORG}/v1/traces'
+    metrics_endpoint: 'http://openobserve:5080/api/${env:OPENOBSERVE_ORG}/v1/metrics'
+    logs_endpoint: 'http://openobserve:5080/api/${env:OPENOBSERVE_ORG}/v1/logs'
     headers:
-      authorization: '${env:GRAFANA_CLOUD_BASIC_AUTH_HEADER}'
+      Authorization: '${env:OPENOBSERVE_AUTH_HEADER}'
 
 service:
   pipelines:
     traces:
       receivers: [otlp]
       processors: [batch]
-      exporters: [otlphttp/grafana]
+      exporters: [otlphttp/openobserve]
     metrics:
       receivers: [otlp]
       processors: [batch]
-      exporters: [otlphttp/grafana]
+      exporters: [otlphttp/openobserve]
     logs:
       receivers: [otlp]
       processors: [batch]
-      exporters: [otlphttp/grafana]
+      exporters: [otlphttp/openobserve]

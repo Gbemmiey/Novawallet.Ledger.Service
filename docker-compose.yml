@@ -1,25 +1,28 @@
 # NovaWallet.Ledger.Service — local development stack.
 #
-# `docker compose up --build` brings up Postgres (the database), Redis
-# (optional HybridCache idempotency fast-path — the app degrades gracefully
-# without it, but it's included for the full documented behavior), RabbitMQ
-# (provisioned by explicit stakeholder request — see note below), and the
-# API itself.
+# `docker compose up --build` brings up the ENTIRE stack unconditionally —
+# Postgres, Redis, RabbitMQ, the API, the OpenTelemetry Collector, and its
+# local OpenObserve sink. There is no profile gate anymore: every service
+# below always starts on the plain command, per explicit instruction. (An
+# earlier revision gated the Collector/OpenObserve behind an `observability`
+# Compose profile so they were opt-in; that gate has been removed — see
+# AI_USAGE.md's later addendum for why and when.)
 #
 # RabbitMQ is NOT wired into any running code path yet (no
 # ConnectionFactory/publisher/consumer exists for it in the codebase today —
 # only OTel trace-context helper classes reference RabbitMQ types, for future
-# use). It's included in the default stack anyway per explicit instruction,
-# not because the app currently needs it — see AI_USAGE.md's Prompt 2 addendum
-# for how this decision evolved from "profile-gated" to "default".
+# use). It's included anyway per explicit instruction, not because the app
+# currently needs it — see AI_USAGE.md's Prompt 2 addendum for how this
+# decision evolved from "profile-gated" to "default".
 #
-# The OpenTelemetry Collector remains genuinely opt-in: the app exports OTLP
-# traces/metrics directly and simply no-ops with a logged warning if no
-# collector is listening, and pointing it at a real Grafana Cloud tenant
-# requires third-party credentials. It stays behind the `observability`
-# Compose profile:
+# Likewise, the OpenTelemetry Collector + OpenObserve are provisioned and
+# always started, but nothing forces the app to depend on them: the OTLP
+# exporter is async/non-blocking on connection failure (logs a warning,
+# doesn't crash startup), so `api`'s ObservabilityOptions__ExporterUri is
+# simply always set below — harmless whether or not anything is actually
+# listening at that address.
 #
-#   docker compose --profile observability -f docker-compose.yml -f docker-compose.observability.yml up --build
+#   docker compose up --build
 #
 # All secrets/config below come from `.env` (git-ignored; see `.env.example`
 # for the tracked template). Values shipped in this repo's own `.env` are
@@ -64,14 +67,18 @@ services:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-novawallet}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
     ports:
-      - "5672:5672"
-      - "15672:15672"
+      - "${RABBITMQ_PORT:-5672}:5672"
+      - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
       interval: 10s
       timeout: 5s
       retries: 10
 
+  # Deliberately no `depends_on: otel-collector` here: the OTLP exporter is
+  # async/non-blocking on connection failure (logs a warning, doesn't crash
+  # startup), so no startup ordering is required even though otel-collector
+  # now always starts alongside `api`.
   api:
     build:
       context: .
@@ -91,8 +98,40 @@ services:
       Jwt__Issuer: ${Jwt__Issuer:-NovaWallet.Ledger.Service}
       Jwt__Audience: ${Jwt__Audience:-NovaWallet.Ledger.Clients}
       Jwt__TokenExpirationTimeInMinutes: ${Jwt__TokenExpirationTimeInMinutes:-60}
+      ObservabilityOptions__ExporterUri: ${OBSERVABILITY_EXPORTER_URI:-http://otel-collector:4317}
     ports:
       - "${API_HTTP_PORT:-5000}:8080"
 
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    volumes:
+      - ./ops/otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    environment:
+      OPENOBSERVE_ORG: ${OPENOBSERVE_ORG:-default}
+      OPENOBSERVE_AUTH_HEADER: ${OPENOBSERVE_AUTH_HEADER}
+    ports:
+      - "${OTEL_COLLECTOR_GRPC_PORT:-4317}:4317"
+      - "${OTEL_COLLECTOR_HTTP_PORT:-4318}:4318"
+    depends_on:
+      - openobserve
+
+  # Local telemetry sink — no third-party account needed. Web UI/API on
+  # OPENOBSERVE_HTTP_PORT; log in with ZO_ROOT_USER_EMAIL/ZO_ROOT_USER_PASSWORD
+  # from .env. No healthcheck configured (the minimal image ships no reliable
+  # readiness probe tooling we could verify), so `depends_on` above is plain
+  # start-order only, not a health-gated condition — matches otel-collector's
+  # own (pre-existing) lack of a healthcheck.
+  openobserve:
+    image: public.ecr.aws/zinclabs/openobserve:latest
+    environment:
+      ZO_ROOT_USER_EMAIL: ${ZO_ROOT_USER_EMAIL}
+      ZO_ROOT_USER_PASSWORD: ${ZO_ROOT_USER_PASSWORD}
+    volumes:
+      - novawallet-openobserve-data:/data
+    ports:
+      - "${OPENOBSERVE_HTTP_PORT:-5080}:5080"
+
 volumes:
   novawallet-postgres-data:
+  novawallet-openobserve-data:

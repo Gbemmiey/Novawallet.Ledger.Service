@@ -185,6 +185,86 @@ low-cardinality, already-existing tag, while `ResponseMessage` was explicitly ru
 source since it sometimes interpolates dynamic content (wallet IDs, statuses) — an unbounded-
 cardinality trap that would have quietly degraded the metrics backend over time.
 
+### Prompt 5 — "I want to use a local OpenObserve as the telemetry sink from OtelCol."
+
+Re-reading `ops/otel-collector-config.yaml` and `docker-compose.observability.yml` surfaced a
+standing gap this request incidentally fixed: `GRAFANA_CLOUD_OTLP_ENDPOINT` /
+`GRAFANA_CLOUD_BASIC_AUTH_HEADER` had shipped blank in `.env`/`.env.example` since they were first
+added, because real third-party credentials were never supplied and were never going to be
+invented. That meant the `observability` Compose profile had never actually been end-to-end
+testable for the entire session, despite being documented as available. Swapping in a local
+OpenObserve container (added to the same profile, no external account needed) makes the profile
+genuinely self-contained and runnable for the first time.
+
+The one non-obvious technical detail: OpenObserve isn't a drop-in replacement for the Grafana
+Cloud exporter config, because it expects distinct per-signal HTTP paths
+(`/api/{org}/v1/traces`, `/v1/metrics`, `/v1/logs`) rather than one generic OTLP gateway endpoint.
+The `otlphttp` exporter component already in use supports this via its
+`traces_endpoint`/`metrics_endpoint`/`logs_endpoint` overrides, so no new exporter type was needed
+— just a different shape of the same config block.
+
+The immediate follow-up instruction was to remove the Grafana Cloud env vars outright rather than
+keep them commented out as a documented alternative. That was executed as a full deletion from
+both `.env` and `.env.example` (recoverable from git history if ever needed again), consistent
+with treating "the telemetry sink" as singular rather than hedging with dead, never-configured
+plumbing left in place for its own sake.
+
+### Prompt 6 — "Don't hardcode outbound ports because of potential conflicts with existing apps on host machines — esp redis, postgres, rabbitmq, openobserve"
+
+A pass over every `ports:` mapping across both Compose files found that `postgres`, `redis`,
+`api`, and `openobserve` were already `${VAR:-default}`-driven from earlier turns this session —
+only `rabbitmq` (`docker-compose.yml`) and `otel-collector` (`docker-compose.observability.yml`,
+not named in the request but sharing the identical conflict risk, added for consistency) still had
+bare `"5672:5672"`/`"15672:15672"`/`"4317:4317"`/`"4318:4318"` mappings. Both were parameterized the
+same way, with defaults matching prior behavior exactly, so nobody's workflow changes unless they
+hit a real conflict and override.
+
+The detail worth recording: only the host-side (left) number of each `host:container` mapping was
+made variable. The container-side (right) number stays fixed intentionally, since nothing inside
+the Compose network ever addresses another service by its host-published port — `api` reaches
+Postgres/Redis/RabbitMQ/the Collector via Compose service name plus the fixed container port
+(`postgres:5432`, `otel-collector:4317`, etc.), so changing what's exposed to the host can never
+break inter-container communication.
+
+### Prompt 7 — "consolidate the docker compose files"
+
+This request was a chance to re-examine a design decision made two prompts earlier (Prompt 5's
+addendum), rather than just mechanically merging two YAML files. `docker-compose.observability.yml`
+had originally been kept as a *separate* file (rather than folding `otel-collector`/`openobserve`
+straight into `docker-compose.yml`, profile-gated in place) for one stated reason: letting `api`'s
+`ObservabilityOptions__ExporterUri` be set "only when the collector is present," on the claim that
+Compose has no native "env var differs by profile on the same service" mechanism.
+
+Re-checking that reasoning once consolidation was actually on the table, it didn't hold up: the
+exporter is already unconditionally env-driven (`OBSERVABILITY_EXPORTER_URI` in `.env`) and, as
+documented since it was first added, is async/non-blocking — it simply logs a warning and no-ops if
+nothing is listening at that address. So there was never a real need to conditionally *set* the env
+var at all; it's harmless to always set it on `api`, whether or not the `observability` profile is
+active, the same way `RABBITMQ_URI`-style "provisioned but not yet consumed" values are already
+handled elsewhere in this file. The original two-file split was solving a problem that didn't
+actually exist — consolidating back into a single `docker-compose.yml` (with `otel-collector` and
+`openobserve` both carrying `profiles: ["observability"]` in place) is a genuine simplification, not
+just a file-count change. `docker-compose.observability.yml` was deleted, and the `.slnx`, README,
+`.env.example`, and `ops/otel-collector-config.yaml` comment references to the two-file invocation
+were updated to the single-file `docker compose --profile observability up --build` form.
+
+### Prompt 8 — "I want docker compose up to start and run everything"
+
+This instruction directly supersedes the profile-gating decisions made in Prompts 5–7: `otel-collector`
+and `openobserve` were, until this point, always described as "genuinely opt-in" — profile-gated behind
+`observability` specifically because nothing in the running app depends on them. That framing isn't
+being called wrong in hindsight; it was a reasonable default for an extras-are-optional posture. This
+prompt states a different posture outright — the entire stack, unconditionally, on the bare command —
+so the fix was mechanical once the intent was clear: drop `profiles: ["observability"]` from both
+services in `docker-compose.yml`, leaving every other piece of the design untouched. Specifically kept
+as-is: no `depends_on: otel-collector` was added to `api` (the OTLP exporter is still async/non-blocking,
+so there's still no real startup-ordering need), `otel-collector`'s plain `depends_on: [openobserve]`
+stays a start-order-only dependency (neither service has a healthcheck to key a `condition` off of), and
+RabbitMQ/the Collector/OpenObserve are all still honestly documented as unconsumed-by-code today — this
+prompt changes *when* they start, not *whether* the app actually talks to them. Updated in the same pass:
+`.env.example`'s and `.env`'s banner comments (dropped "optional"/"profile" framing), and the README's
+Getting Started section (one command instead of two).
+
 ## A specific case where AI output was wrong/unsafe for a financial system
 
 **The daily transfer limit's `INSERT` branch didn't enforce the limit.**

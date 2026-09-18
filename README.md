@@ -313,7 +313,7 @@ CREATE INDEX "IX_LedgerSnapshot_IsBalanced_Partial"
 * **Primary Database:** PostgreSQL 16
 * **Cache & Idempotency:** Redis 8, password-protected (`--requirepass`, no anonymous access even in local dev)
 * **Message Broker:** RabbitMQ 3.13 — part of the default `docker compose up --build` stack by explicit stakeholder request; **not yet wired into any running code path** (no `ConnectionFactory`/publisher/consumer exists today, only OTel trace-context helper classes reference RabbitMQ types for future use). It runs, but nothing talks to it yet.
-* **Observability:** OpenTelemetry Collector (forwarding to Grafana Cloud) + Prometheus — the app exports OTLP traces/metrics directly and Prometheus scrapes `/metrics` on the API itself regardless of whether a collector is present (the OTLP exporter is non-blocking/async on connection failure). The Collector's endpoint (`ObservabilityOptions__ExporterUri`) is fully config/env-driven via `OBSERVABILITY_EXPORTER_URI`. The Collector itself stays behind the opt-in `observability` Compose profile, not started by default, since pointing it at a real backend requires third-party Grafana Cloud credentials.
+* **Observability:** OpenTelemetry Collector (forwarding to a local OpenObserve instance, UI at `http://localhost:5080`) + Prometheus — the app exports OTLP traces/metrics directly and Prometheus scrapes `/metrics` on the API itself regardless of whether a collector is present (the OTLP exporter is non-blocking/async on connection failure). The Collector's endpoint (`ObservabilityOptions__ExporterUri`) is fully config/env-driven via `OBSERVABILITY_EXPORTER_URI`. OpenObserve needs no third-party account — it's a local container, part of the default stack alongside the Collector, even though no running code path consumes either yet.
 * **Error Format:** RFC 7807 Problem Details
 
 ### Custom Application Metrics
@@ -359,19 +359,13 @@ touched to add this.
 
 ### Running via Docker Compose
 
-Copy `.env.example` to `.env` (a working `.env` with dev-only placeholder values already ships in this repo, so this step is optional) and start the default stack — API, PostgreSQL, Redis, RabbitMQ — with a single command:
+Copy `.env.example` to `.env` (a working `.env` with dev-only placeholder values already ships in this repo, so this step is optional) and start the **entire** stack — API, PostgreSQL, Redis, RabbitMQ, the OpenTelemetry Collector, and its local OpenObserve sink — with a single, unconditional command (no Compose profile to remember):
 
 ```bash
 docker compose up --build
 ```
 
-The optional OpenTelemetry Collector (see the stack note above) is gated behind a Compose `profile` and an override file, since nothing in the running app depends on it and it requires real third-party Grafana Cloud credentials to be useful:
-
-```bash
-docker compose --profile observability -f docker-compose.yml -f docker-compose.observability.yml up --build
-```
-
-The Collector forwards to a real Grafana Cloud tenant (`ops/otel-collector-config.yaml`), so `GRAFANA_CLOUD_OTLP_ENDPOINT` / `GRAFANA_CLOUD_BASIC_AUTH_HEADER` must be supplied in `.env` for that profile to be useful — left blank by default.
+The Collector forwards traces/metrics/logs to OpenObserve (`ops/otel-collector-config.yaml`), running locally in the same Compose network — no third-party account needed. Once up, open `http://localhost:5080` and log in with `ZO_ROOT_USER_EMAIL` / `ZO_ROOT_USER_PASSWORD` from `.env` (dev-only placeholders ship by default, no setup required) — traces, metrics, and logs land under the `default` org/stream. As noted above, RabbitMQ and the Collector/OpenObserve run unconditionally but aren't consumed by any code path yet — they start regardless.
 
 > **Pending migration note:** `Migrations/` currently only covers schema up through the `OutboxEnums` migration. The `WalletTransfer` and `LedgerSnapshot` tables (added in later iterations — see §3) do not have migrations yet, so against a fresh volume `POST /api/v1/wallets/transfer` and the `ReconciliationWorker` will fail until those migrations are hand-authored and applied. Deposits, wallet creation, and wallet reads work end-to-end today.
 
@@ -380,6 +374,15 @@ Once started:
 * **OpenAPI / Swagger Specs:** `http://localhost:5000/swagger`
 * **Health / Readiness Endpoint:** `http://localhost:5000/health`
 * **Prometheus Metrics:** `http://localhost:5000/metrics`
+
+> **Port conflicts:** every published host port (`POSTGRES_PORT`, `REDIS_PORT`,
+> `RABBITMQ_PORT`/`RABBITMQ_MANAGEMENT_PORT`, `API_HTTP_PORT`, `OPENOBSERVE_HTTP_PORT`,
+> `OTEL_COLLECTOR_GRPC_PORT`/`OTEL_COLLECTOR_HTTP_PORT`) is overridable via `.env`. Only the
+> host-side number is configurable — the container-side port is fixed and unaffected, since
+> inter-container traffic addresses other services by Compose service name (e.g. `postgres:5432`,
+> `otel-collector:4317`), never through the host-published mapping. If any default collides with
+> something already running on your machine, change the corresponding variable in `.env` and
+> re-run `docker compose up --build`.
 
 ---
 
