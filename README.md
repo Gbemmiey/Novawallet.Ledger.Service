@@ -391,6 +391,30 @@ Once started:
 > something already running on your machine, change the corresponding variable in `.env` and
 > re-run `docker compose up --build`.
 
+> **Two first-boot pitfalls, both already handled by the shipped `.env`:**
+>
+> * **OpenObserve won't start with a weak `ZO_ROOT_USER_PASSWORD`.** It panics the container at
+>   boot (`... is too weak: Password must be 8-128 characters and contain at least one lowercase
+>   letter, one uppercase letter, one digit, and one special character.`) rather than falling back
+>   to anything. If you change the password, keep it meeting that rule, and regenerate
+>   `OPENOBSERVE_AUTH_HEADER` per the comment above it in `.env`/`.env.example`.
+> * **RabbitMQ can fail its very first boot with `Error when reading
+>   /var/lib/rabbitmq/.erlang.cookie: eacces`.** This is a known Docker-Desktop-on-Windows
+>   filesystem-visibility race, not a real permissions problem — more likely the more containers
+>   Compose creates/starts at once (i.e. exactly what the full unconditional stack does). The
+>   `rabbitmq` service now has both a named volume (`novawallet-rabbitmq-data`, instead of relying
+>   on the container's own writable layer) and `restart: on-failure:5`, so a transient hit here
+>   self-heals within a few seconds without failing the whole `docker compose up`.
+
+> **Memory caps:** every service in `docker-compose.yml` carries a `deploy.resources` block
+> (`postgres`/`rabbitmq` 512M, `api` 768M, `openobserve` 1024M, `redis`/`migrator`/`otel-collector`
+> 256M, all with a proportionate `reservations` floor) — this is Compose V2, so `docker compose up`
+> applies these directly, no Swarm mode needed. `redis` additionally sets its own `--maxmemory 200mb
+> --maxmemory-policy allkeys-lru` below the cgroup cap, so it evicts idempotency-cache keys under
+> pressure instead of being OOM-killed outright (nothing cached there is a system of record). If any
+> container ever exits with code 137 (OOM-killed — check via `docker inspect <name> --format
+> '{{.State.OOMKilled}}'`), raise that service's `limits.memory` in `docker-compose.yml`.
+
 ---
 
 ## Automated Testing Suite

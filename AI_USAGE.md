@@ -303,6 +303,97 @@ mode") settle the ambiguity:
   is harmless either way — meaning the `migrator` service's environment could be, and was, kept to just
   `NOVAWALLET_LEDGER_CONNECTION_STRING`, not a full copy of `api`'s.
 
+### Prompt 10 — pasted a failed `docker compose up --build` log, no further instruction
+
+The user ran the full stack for the first time after the migrations redesign (Prompt 9) and pasted
+the raw failure output rather than describing it — three unrelated problems in one log, which had to
+be told apart before any of them could be fixed:
+
+1. **OpenObserve panicked at boot**: `ZO_ROOT_USER_PASSWORD is too weak: Password must be 8-128
+   characters and contain at least one lowercase letter, one uppercase letter, one digit, and one
+   special character.` The shipped placeholder, `dev-only-openobserve-password-change-me`, is
+   all-lowercase with no digit — it had never actually been booted against before this run, so the
+   requirement was invisible until now. Fixed by changing `ZO_ROOT_USER_PASSWORD` (in both `.env`
+   and `.env.example`) to `DevOnlyPassword1!` and regenerating `OPENOBSERVE_AUTH_HEADER`'s base64
+   accordingly, per the existing comment already documenting how to do that.
+2. **RabbitMQ crash-looped** on `Error when reading /var/lib/rabbitmq/.erlang.cookie: eacces`. This
+   one needed research, not guessing: it's a recognized Docker-Desktop-on-Windows filesystem race
+   during first boot (the entrypoint writes+chmods the cookie file, and a near-simultaneous read
+   sees stale permission state) — a transient timing bug, not a real permissions fault, and more
+   likely precisely when many containers start at once, which is what the unconditional full-stack
+   `docker compose up` does. Fixed with two changes to the `rabbitmq` service in `docker-compose.yml`:
+   a named `novawallet-rabbitmq-data` volume (consistent with `postgres`/`openobserve`, replacing
+   reliance on the container's own writable layer) and `restart: on-failure:5`, so a transient hit
+   self-heals instead of failing the whole stack.
+3. **`otel-collector` failed to bind port 4317**: `Bind for 0.0.0.0:4317 failed: port is already
+   allocated`. Traced with `docker ps -a` rather than assumed — the actual cause was an unrelated,
+   already-running project on the same machine (`heritagehaven-otel-collector` and
+   `heritagehaven-redis` containers, from a different repo) already holding host ports 4317/4318 and
+   6379. This is exactly the scenario the fully-overridable-host-ports design (Prompt 6) exists for:
+   rather than ask the user to stop an unrelated project's containers, `REDIS_PORT`,
+   `OTEL_COLLECTOR_GRPC_PORT`, and `OTEL_COLLECTOR_HTTP_PORT` were bumped in this repo's own `.env`
+   (not `.env.example` — this collision is specific to this machine's other running project, not a
+   general default worth changing for everyone). Internal Compose-network traffic still addresses
+   both services by their container-side ports (`redis:6379`, `otel-collector:4317`), so remapping
+   only the host side doesn't touch anything inside the stack.
+
+All three were config/environment issues, not application-code bugs — none of the C# changes from
+Prompt 9 needed to change. Documented both pitfalls (1) and (2) in README's existing "Port conflicts"
+callout, since they're the kind of first-boot surprise a future reader would otherwise have to
+re-diagnose from scratch.
+
+### Prompt 11 — "set names for the dependencies in the container rather than app-1, redis-1, etc"
+
+Compose's default container-naming scheme (`<project>-<service>-<replica>`, e.g.
+`novawalletledgerservice-api-1`) is verbose and non-obvious to `docker ps`/`docker logs`/`docker exec`
+at a glance. Added an explicit `container_name:` to all seven services in `docker-compose.yml`
+(`postgres`, `redis`, `rabbitmq`, `migrator`, `api`, `otel-collector`, `openobserve`), each prefixed
+`novawallet-` to match the existing volume-naming convention (`novawallet-postgres-data`, etc.) —
+so e.g. `docker logs novawallet-api` now works directly.
+
+One thing checked before making this change: whether hardcoding `container_name` would break anything
+that relies on Compose's automatic per-service DNS aliasing (e.g. `api`'s
+`NOVAWALLET_LEDGER_CONNECTION_STRING` uses `Host=postgres`, and `REDIS_URI`/`ObservabilityOptions__ExporterUri`
+address `redis`/`otel-collector` by service name). It doesn't: Compose registers both the service name
+and an explicit `container_name` as network aliases on the shared bridge network, so none of the
+inter-service hostnames needed to change. Grepped the repo first for any other place the old
+auto-generated names (`novawalletledgerservice-*-1`) might already be referenced (docs, scripts) —
+none were found, so no other files needed updates. The one tradeoff worth naming: `container_name`
+disables `docker compose up --scale <service>=N` for that service (fixed names can't be shared by
+multiple replicas) — a non-issue here, since nothing in this compose file is ever scaled.
+
+### Prompt 12 — "apply meaningful memory caps to the docker compose"
+
+Added a `deploy.resources.limits`/`reservations.memory` block to all seven services in
+`docker-compose.yml`. Worth naming explicitly: the `deploy` key's origins are Swarm-only, but this
+stack uses Compose V2 (`docker compose`, the CLI plugin — not the legacy `docker-compose` v1
+binary), which does apply `deploy.resources` on a plain `docker compose up`, no Swarm mode required.
+Sizes were picked per service's actual footprint rather than one blanket number: `postgres`/
+`rabbitmq` 512M (Erlang VM + management plugin baseline is non-trivial), `api` 768M (a .NET 9
+Minimal API host with EF Core, an OTel SDK, and a Redis client has more headroom than a bare
+console app), `openobserve` 1024M, `redis`/`migrator`/`otel-collector` 256M each.
+
+Two follow-on judgment calls, not just mechanical additions:
+
+1. **Redis got its own `--maxmemory 200mb --maxmemory-policy allkeys-lru`**, set below its 256M
+   cgroup cap. Without this, Redis has no internal ceiling of its own — it grows until the kernel
+   OOM-kills the whole container, dropping every connection at once. With `--maxmemory` +
+   `allkeys-lru`, Redis evicts its own least-recently-used keys under pressure and keeps serving.
+   This is safe specifically because everything cached there (idempotency keys via `HybridCache`) is
+   a cache, not a system of record — evicting one just means the next identical request re-executes
+   instead of hitting the fast path, never a correctness problem.
+2. **OpenObserve's cap is the one genuinely uncertain call.** Its own boot log (pasted earlier this
+   session) reported auto-sizing its memory cache and DataFusion query pool as a fraction of
+   *host-visible* RAM — "MEM max size 1.90 GB, Datafusion pool size: 2.85 GB" on a 7.6 GB host — not
+   the container's cgroup limit. Capping it at 1024M is a bet that those are lazily-filled ceilings
+   rather than upfront allocations, reasonable for the light single-API ingest/query volume this
+   take-home stack actually produces, but not something confirmed against OpenObserve's own
+   internals or current docs (no web access in this session to verify the exact `ZO_MEMORY_CACHE_*`
+   tuning variables some quick research suggested exist). Documented this honestly as an unverified
+   assumption in both `docker-compose.yml` and the README, with the concrete symptom to watch for
+   (exit code 137 / `OOMKilled: true`) and the fix (raise the limit) rather than asserting it's
+   correct.
+
 ## A specific case where AI output was wrong/unsafe for a financial system
 
 **The daily transfer limit's `INSERT` branch didn't enforce the limit.**
