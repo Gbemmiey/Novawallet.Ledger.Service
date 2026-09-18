@@ -1,8 +1,18 @@
-﻿namespace NovaWallet.Api.Core.Dto.Login
+﻿using NovaWallet.Api.Core.Enums;
+
+namespace NovaWallet.Api.Core.Dto.Login
 {
     public class MockLoginRequest
     {
         public Guid UserId { get; set; }
+
+        /// <summary>
+        /// Mock-auth role, embedded verbatim into the JWT's role claim (see
+        /// <see cref="Infrastructure.Providers.MockUserAuthHelper"/>). Defaults to
+        /// <see cref="UserRole.Customer"/> - callers must explicitly opt in to
+        /// <see cref="UserRole.Admin"/> to reach the <c>/api/v1/admin</c> endpoints.
+        /// </summary>
+        public UserRole Role { get; set; } = UserRole.Customer;
     }
 
     /// <summary>

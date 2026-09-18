@@ -33,7 +33,8 @@ namespace NovaWallet.Api.Infrastructure.Providers
 
             var claims = new[]
             {
-                new Claim(    ClaimTypes.NameIdentifier,    loginRequest.UserId.ToString())
+                new Claim(ClaimTypes.NameIdentifier, loginRequest.UserId.ToString()),
+                new Claim(ClaimTypes.Role, loginRequest.Role.ToString())
             };
 
             var token = new JwtSecurityToken(

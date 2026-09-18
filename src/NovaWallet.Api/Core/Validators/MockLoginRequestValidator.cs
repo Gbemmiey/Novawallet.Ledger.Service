@@ -10,6 +10,10 @@ namespace NovaWallet.Api.Core.Validators
             RuleFor(x => x.UserId)
                 .NotEmpty()
                 .WithMessage("UserId is required.");
+
+            RuleFor(x => x.Role)
+                .IsInEnum()
+                .WithMessage("Role must be a valid UserRole value.");
         }
     }
 }

@@ -70,6 +70,11 @@ namespace NovaWallet.Api.Infrastructure.Extensions
                 options.FallbackPolicy = new AuthorizationPolicyBuilder()
                     .RequireAuthenticatedUser()
                     .Build();
+
+                // Backs the /api/v1/admin route group. RequireRole checks the JWT's role claim
+                // (ClaimTypes.Role, written by MockUserAuthHelper) against nameof(UserRole.Admin).
+                options.AddPolicy(NovaWalletConstants.AuthorizationPolicyConstants.AdminOnly, policy =>
+                    policy.RequireRole(nameof(Core.Enums.UserRole.Admin)));
             });
 
             return services;

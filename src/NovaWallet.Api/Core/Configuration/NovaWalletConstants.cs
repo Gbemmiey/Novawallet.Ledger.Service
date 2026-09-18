@@ -50,6 +50,23 @@ public static class NovaWalletConstants
     public static class AuthorizationPolicyConstants
     {
         public const string PartnerOnly = "PartnerOnly";
+
+        /// <summary>
+        /// Requires the caller's JWT to carry a <c>role</c> claim of <c>Admin</c> (see
+        /// <c>UserRole</c>/<c>MockUserAuthHelper</c>). Wired up in
+        /// <c>AuthenticationExtensions.AddJwtAuthenticationAndAuthorization</c> and applied to
+        /// the entire <c>/api/v1/admin</c> route group.
+        /// </summary>
+        public const string AdminOnly = "AdminOnly";
+    }
+
+    /// <summary>
+    /// Default/ceiling values for paginated list endpoints (wallet statement, admin audit log).
+    /// </summary>
+    public static class PaginationConstants
+    {
+        public const int DefaultPageSize = 20;
+        public const int MaxPageSize = 100;
     }
 
     /// <summary>
