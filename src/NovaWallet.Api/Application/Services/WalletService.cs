@@ -142,7 +142,6 @@ namespace NovaWallet.Api.Application.Services
         }
 
         public async Task<ServiceApiResponse<PagedResponse<AccountEntryResponse>>> GetWalletStatement(
-            Guid walletId,
             int pageNumber,
             int pageSize,
             DateTime? fromDate,
@@ -156,27 +155,22 @@ namespace NovaWallet.Api.Application.Services
                 return ServiceApiResponse<PagedResponse<AccountEntryResponse>>.CreateFailure(ResponseCodes.AccessDenied);
             }
 
+            // A user has exactly one wallet, so it's resolved from the caller's identity -
+            // no client-supplied walletId, and therefore no other-wallet access to guard
+            // against (mirrors RetrieveWalletDetails).
             var wallet = await _novaWalletDbContext.Wallets
                 .AsNoTracking()
-                .Where(w => w.Id == walletId)
-                .Select(w => new { w.UserId, w.AccountId })
+                .Where(w => w.UserId == userId.Value)
+                .Select(w => new { w.AccountId })
                 .FirstOrDefaultAsync(cancellationToken);
 
             if (wallet is null)
             {
-                return ServiceApiResponse<PagedResponse<AccountEntryResponse>>.CreateFailure(ResponseCodes.NoRecordReturned);
-            }
-
-            // Ownership: a valid token alone does not authorize reading any wallet's statement,
-            // only the caller's own (mirrors TransferService's source-wallet ownership guard).
-            if (wallet.UserId != userId.Value)
-            {
                 _logger.LogWarning(
-                    "Wallet statement rejected - caller {CallerUserId} does not own Wallet {WalletId}.",
-                    userId.Value,
-                    walletId);
+                    "Wallet statement requested but no wallet exists for UserId {UserId}",
+                    userId.Value);
 
-                return ServiceApiResponse<PagedResponse<AccountEntryResponse>>.CreateFailure(ResponseCodes.RequestNotAllowed);
+                return ServiceApiResponse<PagedResponse<AccountEntryResponse>>.CreateFailure(ResponseCodes.NoRecordReturned);
             }
 
             var clampedPageNumber = pageNumber < 1 ? 1 : pageNumber;

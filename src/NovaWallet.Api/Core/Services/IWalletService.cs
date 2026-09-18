@@ -11,14 +11,12 @@ namespace NovaWallet.Api.Core.Services
         Task<ServiceApiResponse<CreateWalletResponse>> RetrieveWalletDetails(CancellationToken cancellationToken);
 
         /// <summary>
-        /// Returns a paginated, newest-first statement of AccountEntries for the caller-owned
-        /// wallet's underlying Account. Ownership-enforced: 404 if the wallet doesn't exist,
-        /// 403 if the caller doesn't own it - a valid token alone does not authorize reading
-        /// any wallet's statement, only the caller's own (mirrors TransferService's ownership
-        /// guard).
+        /// Returns a paginated, newest-first statement of AccountEntries for the caller's own
+        /// wallet's underlying Account. A user has exactly one wallet, so the wallet is
+        /// resolved from the caller's identity rather than a client-supplied walletId - there
+        /// is no other-wallet access to guard against. 404 if the caller has no wallet yet.
         /// </summary>
         Task<ServiceApiResponse<PagedResponse<AccountEntryResponse>>> GetWalletStatement(
-            Guid walletId,
             int pageNumber,
             int pageSize,
             DateTime? fromDate,

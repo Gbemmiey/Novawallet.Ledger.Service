@@ -26,7 +26,7 @@ namespace NovaWallet.Api.Features.Wallets
                 .Produces<ServiceApiResponse<CreateWalletResponse>>();
 
             walletApi
-                .MapGet("/{walletId:guid}/statement", GetWalletStatement)
+                .MapGet("/statement", GetWalletStatement)
                 .WithName("GetWalletStatement")
                 .Produces<ServiceApiResponse<PagedResponse<AccountEntryResponse>>>();
 
@@ -54,12 +54,13 @@ namespace NovaWallet.Api.Features.Wallets
         }
 
         /// <summary>
-        /// Paginated, newest-first statement of a wallet's AccountEntries. Ownership-enforced
-        /// in IWalletService.GetWalletStatement - 404 if the wallet doesn't exist, 403 if the
-        /// caller isn't its owner. pageSize is clamped server-side (1-100, default 20).
+        /// Paginated, newest-first statement of the caller's own wallet's AccountEntries.
+        /// Since a user has exactly one wallet, the wallet is resolved from the caller's
+        /// identity (IWalletService.GetWalletStatement) - no walletId is accepted, so there is
+        /// no other-wallet access to guard against. 404 if the caller has no wallet yet.
+        /// pageSize is clamped server-side (1-100, default 20).
         /// </summary>
         private static async Task<IResult> GetWalletStatement(
-            Guid walletId,
             HttpContext httpContext,
             IWalletService walletService,
             CancellationToken cancellationToken,
@@ -69,7 +70,7 @@ namespace NovaWallet.Api.Features.Wallets
             DateTime? toDate = null)
         {
             var response = await walletService.GetWalletStatement(
-                walletId, pageNumber, pageSize, fromDate, toDate, cancellationToken);
+                pageNumber, pageSize, fromDate, toDate, cancellationToken);
 
             return response.ToResult(httpContext);
         }
