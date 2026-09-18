@@ -32,7 +32,7 @@ namespace NovaWallet.Api.Workers
     /// <para>
     /// <b>Incremental reconciliation:</b> rather than re-summing an account's entire
     /// <c>AccountEntries</c> history on every tick, each wallet's ledger balance is computed as
-    /// <c>LastSnapshot.LedgerBalanceKobo + Sum(new entries posted since LastSnapshot)</c>, using
+    /// <c>LastSnapshot.WatermarkBalanceKobo + Sum(entries posted after the last watermark)</c>, using
     /// the wallet's most recent <see cref="LedgerSnapshot"/> (found via <c>LedgerSnapshot</c>'s own
     /// <c>IX_LedgerSnapshot_WalletId_CreatedAt</c> index) as the baseline and
     /// <see cref="LedgerSnapshot.LastAccountEntryId"/> as the "already accounted for" watermark -
@@ -41,14 +41,20 @@ namespace NovaWallet.Api.Workers
     /// with no prior snapshot sums its whole history once (first sweep only); every sweep after
     /// that only touches entries newer than the watermark, so per-tick cost stays roughly constant
     /// as an account's lifetime transaction count grows, instead of scaling with it.
-    /// <b>Known limitation:</b> because <c>AccountEntry.Id</c> is generated client-side at
-    /// construction time rather than by a DB sequence assigned at commit, two concurrent postings
-    /// could - in a narrow window - commit out of ID order (the numerically-lower-ID transaction
-    /// commits after the higher-ID one). If a sweep's watermark lands between those two commits,
-    /// the lower-ID entry would be permanently skipped by every future incremental sum. This is
-    /// not corrected automatically today; a time-based grace-period watermark (only advancing the
-    /// cursor past entries older than e.g. a few seconds) would close this gap and is a reasonable
-    /// follow-up if it's ever observed in practice.
+    /// </para>
+    /// <para>
+    /// <b>Grace-period watermark:</b> <c>AccountEntry.Id</c> is assigned before commit (any ID
+    /// scheme is - client UUID, DB default, or sequence), so two concurrent postings can commit out
+    /// of ID order. If the watermark advanced straight to the highest committed ID, a slower,
+    /// lower-ID transaction committing afterwards would be skipped forever. To prevent that, the
+    /// balance compared against the wallet (<c>LedgerBalanceKobo</c>) always includes every
+    /// committed entry past the previous watermark, but the <i>stored</i> watermark
+    /// (<c>LastAccountEntryId</c> plus its matching <c>WatermarkBalanceKobo</c>) only advances to
+    /// the highest entry older than <see cref="ReconciliationWorkerOptions.WatermarkGracePeriodSeconds"/>.
+    /// Younger entries are simply re-summed on the next sweep(s) until they age past the grace
+    /// period, by which point any in-flight lower-ID transaction has long since committed. The
+    /// residual assumption is that no posting transaction outlives the grace period (and that
+    /// clocks across API instances don't skew by more than it).
     /// </para>
     /// <para>
     /// <b>Consistency guarantee behind immediate auto-freeze:</b> despite being incremental, each
@@ -61,8 +67,8 @@ namespace NovaWallet.Api.Workers
     /// and its paired <c>AccountEntries</c> happens inside one DB transaction
     /// (<c>TransferService</c>/<c>DepositConsumer</c>), Postgres guarantees both become visible
     /// together or not at all. A discrepancy this worker finds therefore reflects an actual bug,
-    /// not a race - which is what justifies freezing without a grace period (subject to the one
-    /// known limitation immediately above).
+    /// not a race - which is what justifies freezing without a grace period on the comparison
+    /// itself (the grace period above only governs how far the stored watermark advances).
     /// </para>
     /// <para>
     /// <b>Freeze behavior:</b> a wallet found unbalanced while still <see cref="WalletStatus.Active"/>
@@ -151,7 +157,7 @@ namespace NovaWallet.Api.Workers
         /// </summary>
         private sealed record WalletReconciliationRow(
             Guid WalletId, Guid AccountId, int Status, long WalletBalanceKobo, long LedgerBalanceKobo,
-            Guid? LastAccountEntryId);
+            Guid? LastAccountEntryId, long WatermarkBalanceKobo);
 
         /// <summary>
         /// Thin, metrics-instrumented wrapper around <see cref="ProcessSweepTickCoreAsync"/> -
@@ -174,6 +180,7 @@ namespace NovaWallet.Api.Workers
 
             var batchSize = Math.Max(1, _options.BatchSize);
             var cursor = _cursor;
+            var graceCutoff = DateTime.UtcNow - TimeSpan.FromSeconds(Math.Max(0, _options.WatermarkGracePeriodSeconds));
 
             // Single set-based raw SQL query for the whole batch (EF Core 8's Database.SqlQuery<T>
             // support for non-scalar types - the same mechanism already used elsewhere in this
@@ -195,20 +202,36 @@ namespace NovaWallet.Api.Workers
                     w.""AccountId"" AS ""AccountId"",
                     w.""Status"" AS ""Status"",
                     w.""AvailableBalanceKobo"" AS ""WalletBalanceKobo"",
-                    COALESCE(prior.""LedgerBalanceKobo"", 0) + COALESCE(delta.""DeltaKobo"", 0) AS ""LedgerBalanceKobo"",
-                    COALESCE(delta.""MaxEntryId"", prior.""LastAccountEntryId"") AS ""LastAccountEntryId""
+                    (COALESCE(prior.""WatermarkBalanceKobo"", 0) + COALESCE(delta.""DeltaKobo"", 0))::bigint AS ""LedgerBalanceKobo"",
+                    COALESCE(safe.""SafeMaxId"", prior.""LastAccountEntryId"") AS ""LastAccountEntryId"",
+                    (COALESCE(prior.""WatermarkBalanceKobo"", 0) + COALESCE(delta.""SafeDeltaKobo"", 0))::bigint AS ""WatermarkBalanceKobo""
                 FROM ""Wallets"" w
                 LEFT JOIN LATERAL (
-                    SELECT ls.""LedgerBalanceKobo"", ls.""LastAccountEntryId""
+                    SELECT ls.""WatermarkBalanceKobo"", ls.""LastAccountEntryId""
                     FROM ""LedgerSnapshot"" ls
                     WHERE ls.""WalletId"" = w.""Id""
                     ORDER BY ls.""CreatedAt"" DESC, ls.""Id"" DESC
                     LIMIT 1
                 ) prior ON TRUE
                 LEFT JOIN LATERAL (
+                    -- Safe watermark: highest entry ID (after the prior watermark) that is already
+                    -- older than the grace period. Postgres has no MAX(uuid), hence ORDER BY/LIMIT.
+                    SELECT ae.""Id"" AS ""SafeMaxId""
+                    FROM ""AccountEntries"" ae
+                    WHERE ae.""AccountId"" = w.""AccountId""
+                      AND (prior.""LastAccountEntryId"" IS NULL OR ae.""Id"" > prior.""LastAccountEntryId"")
+                      AND ae.""CreatedAt"" < {graceCutoff}
+                    ORDER BY ae.""Id"" DESC
+                    LIMIT 1
+                ) safe ON TRUE
+                LEFT JOIN LATERAL (
+                    -- DeltaKobo: every entry past the prior watermark, including those still inside
+                    -- the grace period (this is what gets compared to the wallet balance).
+                    -- SafeDeltaKobo: only the ID-prefix up to SafeMaxId (what the new watermark covers).
                     SELECT
                         SUM(CASE WHEN ae.""EntryType"" = 'Credit' THEN ae.""AmountKobo"" ELSE -ae.""AmountKobo"" END) AS ""DeltaKobo"",
-                        MAX(ae.""Id"") AS ""MaxEntryId""
+                        SUM(CASE WHEN ae.""EntryType"" = 'Credit' THEN ae.""AmountKobo"" ELSE -ae.""AmountKobo"" END)
+                            FILTER (WHERE safe.""SafeMaxId"" IS NOT NULL AND ae.""Id"" <= safe.""SafeMaxId"") AS ""SafeDeltaKobo""
                     FROM ""AccountEntries"" ae
                     WHERE ae.""AccountId"" = w.""AccountId""
                       AND (prior.""LastAccountEntryId"" IS NULL OR ae.""Id"" > prior.""LastAccountEntryId"")
@@ -241,7 +264,7 @@ namespace NovaWallet.Api.Workers
                     {
                         var snapshot = LedgerSnapshot.Create(
                             runId, row.WalletId, row.AccountId, row.WalletBalanceKobo, row.LedgerBalanceKobo,
-                            row.LastAccountEntryId);
+                            row.LastAccountEntryId, row.WatermarkBalanceKobo);
 
                         db.LedgerSnapshots.Add(snapshot);
 

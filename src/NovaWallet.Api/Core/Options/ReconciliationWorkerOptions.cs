@@ -12,7 +12,8 @@ namespace NovaWallet.Api.Core.Options
     ///   "ReconciliationWorker": {
     ///     "PollingIntervalSeconds": 60,
     ///     "BatchSize": 200,
-    ///     "AutoFreezeOnDiscrepancy": true
+    ///     "AutoFreezeOnDiscrepancy": true,
+    ///     "WatermarkGracePeriodSeconds": 60
     ///   }
     /// }
     /// </code>
@@ -43,5 +44,15 @@ namespace NovaWallet.Api.Core.Options
         /// <see langword="true"/>.
         /// </summary>
         public bool AutoFreezeOnDiscrepancy { get; set; } = true;
+
+        /// <summary>
+        /// Gets or sets how long, in seconds, an AccountEntry must have existed before the
+        /// incremental-reconciliation watermark may advance past it. Must comfortably exceed the
+        /// longest realistic posting transaction (entry IDs are assigned client-side before
+        /// commit, so a slow transaction can commit after a higher-ID one). Entries newer than this
+        /// are still counted in the compared balance - they just aren't yet folded into the
+        /// watermark. Default: 60 seconds.
+        /// </summary>
+        public int WatermarkGracePeriodSeconds { get; set; } = 60;
     }
 }

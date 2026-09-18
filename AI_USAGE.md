@@ -140,6 +140,14 @@ One race condition was surfaced and deliberately **not** engineered around, only
 
 Since `LedgerSnapshot` was already flagged in this README as a table with no hand-authored migration yet, adding `LastAccountEntryId` cost nothing extra on that front — it's still one not-yet-written migration to catch up on, just with one more nullable column than before.
 
+#### Prompt 14 — "Why not make AccountEntry.Id -> DB generated (UUID V7). That will solve the silent bug"
+
+I pushed back on the premise: a DB-generated ID is still assigned before the row is written and therefore before commit, so it can't fix out-of-order commits — that's the same property that makes `WHERE id > last_seen` polling on a `SERIAL` column unsafe. The user then approved the grace-period watermark I proposed instead.
+
+Implementing it exposed a design constraint I hadn't stated up front: the wallet balance includes every committed entry, so the *compared* ledger total can't exclude young entries or it would raise false discrepancies. The fix is to separate the two: the compared `LedgerBalanceKobo` still sums everything past the previous watermark, while a new `LedgerSnapshot.WatermarkBalanceKobo` plus `LastAccountEntryId` only advance to the highest entry older than `ReconciliationWorker:WatermarkGracePeriodSeconds` (default 60). This needed one more column (still no migration written for this table).
+
+Also found and fixed two defects in my own Prompt 13 query while rewriting it, neither caught because `dotnet build`/the query has never been run in this environment: Postgres has no `MAX(uuid)` aggregate (replaced with `ORDER BY ... LIMIT 1`), and `SUM(bigint)` returns `numeric`, which would not materialize into a `long` (added `::bigint` casts). Both are still unexecuted — worth running the worker against a real Postgres. Prompt 13's text above is left as written; its "known limitation" is now resolved by this entry. The remaining assumption (documented in code and README) is that no posting transaction outlives the grace period.
+
 ### Documentation and review (claude.ai)
 
 **Gap review against the brief.**

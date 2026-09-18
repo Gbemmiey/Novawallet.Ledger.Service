@@ -45,6 +45,11 @@ namespace NovaWallet.Api.Infrastructure.Data.EntityConfigurations
             // point-in-time cursor value rather than a real ownership relationship.
             builder.Property(s => s.LastAccountEntryId);
 
+            // Balance of only the entries up to LastAccountEntryId (the grace-lagged watermark) -
+            // see LedgerSnapshot.WatermarkBalanceKobo.
+            builder.Property(s => s.WatermarkBalanceKobo)
+                .IsRequired();
+
             builder.HasOne(s => s.Wallet)
                 .WithMany()
                 .HasForeignKey(s => s.WalletId)

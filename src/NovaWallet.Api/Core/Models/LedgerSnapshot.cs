@@ -50,10 +50,19 @@ namespace NovaWallet.Api.Core.Models
         /// full rationale and the one known race-window caveat.</summary>
         public Guid? LastAccountEntryId { get; }
 
+        /// <summary>Sum(Credit) - Sum(Debit) over only the AccountEntries up to and including
+        /// <see cref="LastAccountEntryId"/> - the baseline the next sweep adds newer entries onto.
+        /// Distinct from <see cref="LedgerBalanceKobo"/> (the full total compared against the
+        /// wallet): the watermark deliberately lags behind the newest entries by the worker's
+        /// grace period, so an entry whose transaction commits slightly out of ID order is still
+        /// picked up by a later sweep rather than permanently skipped.</summary>
+        public long WatermarkBalanceKobo { get; }
+
         private LedgerSnapshot(Guid id, Guid runId, Guid walletId, Guid accountId,
             long walletBalanceKobo, long ledgerBalanceKobo, long discrepancyKobo, bool isBalanced,
-            DateTime createdAt, Guid? lastAccountEntryId)
+            DateTime createdAt, Guid? lastAccountEntryId, long watermarkBalanceKobo)
         {
+            WatermarkBalanceKobo = watermarkBalanceKobo;
             Id = id;
             RunId = runId;
             WalletId = walletId;
@@ -67,7 +76,7 @@ namespace NovaWallet.Api.Core.Models
         }
 
         public static LedgerSnapshot Create(Guid runId, Guid walletId, Guid accountId,
-            long walletBalanceKobo, long ledgerBalanceKobo, Guid? lastAccountEntryId)
+            long walletBalanceKobo, long ledgerBalanceKobo, Guid? lastAccountEntryId, long watermarkBalanceKobo)
         {
             if (runId == Guid.Empty) throw new ArgumentException("RunId is required.", nameof(runId));
             if (walletId == Guid.Empty) throw new ArgumentException("WalletId is required.", nameof(walletId));
@@ -85,7 +94,8 @@ namespace NovaWallet.Api.Core.Models
                 discrepancyKobo: discrepancyKobo,
                 isBalanced: discrepancyKobo == 0,
                 createdAt: DateTime.UtcNow,
-                lastAccountEntryId: lastAccountEntryId);
+                lastAccountEntryId: lastAccountEntryId,
+                watermarkBalanceKobo: watermarkBalanceKobo);
         }
     }
 }
