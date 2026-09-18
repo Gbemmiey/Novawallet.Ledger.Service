@@ -94,6 +94,14 @@ namespace NovaWallet.Api.Core.Options
         /// <summary>
         /// Gets or sets a value indicating whether logs should be displayed to the console.
         /// </summary>
+        /// <remarks>
+        /// Honored regardless of <c>ASPNETCORE_ENVIRONMENT</c> — this is the sole on/off switch
+        /// for the console sink (it previously also required
+        /// <c>IHostEnvironment.IsDevelopment()</c>, which meant container log visibility was
+        /// accidentally coupled to running in "Development" mode; see
+        /// <see cref="StartupOptions.ApplyMigrationsOnStartup"/> for the same
+        /// decouple-from-environment fix applied to migrations).
+        /// </remarks>
         public bool EnableConsoleLog { get; set; } = false;
 
         /// <summary>

@@ -123,7 +123,7 @@ namespace NovaWallet.Api.Infrastructure.Extensions.OpenTelemetry
                         .ToList();
                 });
 
-            if (environment.IsDevelopment() && options.EnableConsoleLog)
+            if (options.EnableConsoleLog)
             {
                 lc.WriteTo.Console(outputTemplate: API_LOG_TEMPLATE);
             }

@@ -34,6 +34,7 @@ namespace NovaWallet.Api.Extensions
         {
             services.Configure<DepositConsumerOptions>(configuration.GetSection("DepositConsumer"));
             services.Configure<ReconciliationWorkerOptions>(configuration.GetSection("ReconciliationWorker"));
+            services.Configure<StartupOptions>(configuration.GetSection("Startup"));
             return services;
         }
 

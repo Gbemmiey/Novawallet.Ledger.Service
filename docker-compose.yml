@@ -1,12 +1,20 @@
 # NovaWallet.Ledger.Service — local development stack.
 #
 # `docker compose up --build` brings up the ENTIRE stack unconditionally —
-# Postgres, Redis, RabbitMQ, the API, the OpenTelemetry Collector, and its
-# local OpenObserve sink. There is no profile gate anymore: every service
-# below always starts on the plain command, per explicit instruction. (An
-# earlier revision gated the Collector/OpenObserve behind an `observability`
-# Compose profile so they were opt-in; that gate has been removed — see
-# AI_USAGE.md's later addendum for why and when.)
+# Postgres, Redis, RabbitMQ, a one-shot `migrator` step, the API, the
+# OpenTelemetry Collector, and its local OpenObserve sink. There is no profile
+# gate anymore: every long-running service below always starts on the plain
+# command, per explicit instruction. (An earlier revision gated the
+# Collector/OpenObserve behind an `observability` Compose profile so they were
+# opt-in; that gate has been removed — see AI_USAGE.md's later addendum for
+# why and when.)
+#
+# Migrations no longer piggyback on ASPNETCORE_ENVIRONMENT=Development (see
+# AI_USAGE.md's later addendum for the full "better way to handle migrations"
+# redesign): the dedicated `migrator` service applies pending EF Core
+# migrations once and exits, `api` waits on it via
+# `condition: service_completed_successfully`, and `api` itself now runs as
+# Production — a real choice, not a migration side-effect.
 #
 # RabbitMQ is NOT wired into any running code path yet (no
 # ConnectionFactory/publisher/consumer exists for it in the codebase today —
@@ -29,9 +37,11 @@
 # dev-only placeholders, safe to commit-adjacent since they're not real secrets.
 #
 # NOTE: migrations for the `WalletTransfer` and `LedgerSnapshot` tables have
-# not been hand-authored yet (see README). Against a fresh volume, `POST
-# /api/v1/wallets/transfer` and the ReconciliationWorker will fail until those
-# migrations are added — deposits and wallet creation/reads work end-to-end.
+# not been hand-authored yet (see README). The `migrator` service above will
+# still run and exit 0 (there's simply nothing pending for those tables to
+# apply) — but against a fresh volume, `POST /api/v1/wallets/transfer` and the
+# ReconciliationWorker will fail once those migrations are added and until
+# they're applied. Deposits and wallet creation/reads work end-to-end today.
 
 services:
   postgres:
@@ -75,6 +85,27 @@ services:
       timeout: 5s
       retries: 10
 
+  # One-shot migration runner (Option B of the "better way to handle migrations"
+  # redesign): builds the same image as `api` but invokes it with `--migrate-only`
+  # (see Program.cs), which applies pending EF Core migrations and exits - no
+  # Kestrel host, no JWT/Redis setup. Waits on `postgres`'s healthcheck alone;
+  # only NOVAWALLET_LEDGER_CONNECTION_STRING is passed in, because tracing the
+  # DI graph confirmed nothing else (Jwt, Redis) is touched
+  # before `--migrate-only` returns - `app.Run()` is never reached, so the
+  # ValidateOnStart()-gated JwtSettings validation and Redis's eager-but-
+  # non-blocking ConnectionMultiplexer.Connect() never come into play here.
+  migrator:
+    build:
+      context: .
+      dockerfile: src/NovaWallet.Api/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NOVAWALLET_LEDGER_CONNECTION_STRING: "Host=postgres;Port=5432;Database=${POSTGRES_DB:-novawallet};Username=${POSTGRES_USER:-novawallet};Password=${POSTGRES_PASSWORD}"
+    command: ["--migrate-only"]
+    restart: "no"
+
   # Deliberately no `depends_on: otel-collector` here: the OTLP exporter is
   # async/non-blocking on connection failure (logs a warning, doesn't crash
   # startup), so no startup ordering is required even though otel-collector
@@ -88,9 +119,16 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrator:
+        condition: service_completed_successfully
     environment:
-      # Development triggers Program.cs's app.ApplyDatabaseMigrationsAsync() on boot.
-      ASPNETCORE_ENVIRONMENT: Development
+      # Option A of the migrations redesign: `api` no longer auto-migrates
+      # based on ASPNETCORE_ENVIRONMENT (that coupling also silently gated
+      # Serilog's console sink behind "Development" - see
+      # ObservabilityOptions.EnableConsoleLog). Schema is already current by
+      # the time `api` starts, via the `migrator` service above; Production
+      # here is now a genuine choice, not a migration side-effect.
+      ASPNETCORE_ENVIRONMENT: Production
       ASPNETCORE_HTTP_PORTS: "8080"
       NOVAWALLET_LEDGER_CONNECTION_STRING: "Host=postgres;Port=5432;Database=${POSTGRES_DB:-novawallet};Username=${POSTGRES_USER:-novawallet};Password=${POSTGRES_PASSWORD}"
       REDIS_URI: "redis:6379,password=${REDIS_PASSWORD}"

@@ -265,6 +265,44 @@ prompt changes *when* they start, not *whether* the app actually talks to them. 
 `.env.example`'s and `.env`'s banner comments (dropped "optional"/"profile" framing), and the README's
 Getting Started section (one command instead of two).
 
+### Prompt 9 — "Is there a better way to handle migrations on start up rather than
+running the api in development mode?"
+
+This one started as a question, not an instruction — worth noting because the answer required actually
+tracing the coupling rather than just adding a feature. `Program.cs` ran
+`app.ApplyDatabaseMigrationsAsync()` only inside `if (app.Environment.IsDevelopment())`, and
+`docker-compose.yml`'s `api` service set `ASPNETCORE_ENVIRONMENT: Development` *specifically* to trigger
+that branch. Tracing what else keys off `IsDevelopment()` in this codebase turned up a second, unrelated
+coupling: `SerilogConfigurationExtensions.cs` only wired up the console sink when
+`environment.IsDevelopment() && options.EnableConsoleLog` — so the migration hack was also silently the
+only thing keeping `docker compose logs api` readable. Neither of those was a deliberate design choice;
+both were side effects of reaching for the one environment flag ASP.NET Core hands you for free.
+
+Presented three options (an in-process config flag; a dedicated one-shot Compose `migrator` service;
+EF Core migration bundles) with an explicit recommendation to combine the first two — the user confirmed
+"Option A + B" without answering two sub-questions left open in the plan (whether `api` should then move
+to `Production` in Compose, and whether the `migrator` service should shell out to `dotnet ef database
+update` via the SDK image or reuse the published `api` image with a new CLI mode). Rather than stall on
+an unanswered sub-question mid-Act-mode, both were resolved with the option that both minimized new
+moving parts and let the original question's own wording ("rather than running the api in development
+mode") settle the ambiguity:
+
+- **`api` now runs `ASPNETCORE_ENVIRONMENT=Production`** in `docker-compose.yml`, since decoupling
+  migrations from `IsDevelopment()` only actually answers the question if the container stops running in
+  Development mode at all. This is what surfaced the Serilog coupling above — fixed in the same pass by
+  making `EnableConsoleLog` alone (already an explicit, documented on/off switch) the sole gate, so
+  container log visibility doesn't regress as a side effect of an unrelated migrations fix.
+- **The `migrator` service reuses `api`'s own published image** with a new `--migrate-only` startup mode
+  in `Program.cs`, rather than an SDK image running `dotnet ef database update`. Reasoning traced before
+  choosing: it needs no `dotnet-ef` tool, no second Dockerfile stage, and — because it calls the exact
+  same `ApplyDatabaseMigrationsAsync()` extension method `api` itself used to call — it structurally
+  cannot drift from what `api`'s own migration logic does. Before wiring its environment variables, the
+  DI graph was traced to confirm what `--migrate-only` actually touches before returning: `app.Run()` is
+  never reached, so the `ValidateOnStart()`-gated `JwtSettings` validation (`AuthenticationExtensions.cs`)
+  never executes, and `AddAppHybridCache`'s eager-but-`AbortOnConnectFail:false` Redis connect attempt
+  is harmless either way — meaning the `migrator` service's environment could be, and was, kept to just
+  `NOVAWALLET_LEDGER_CONNECTION_STRING`, not a full copy of `api`'s.
+
 ## A specific case where AI output was wrong/unsafe for a financial system
 
 **The daily transfer limit's `INSERT` branch didn't enforce the limit.**

@@ -1,5 +1,7 @@
 using FluentValidation;
+using Microsoft.Extensions.Options;
 using Microsoft.FeatureManagement;
+using NovaWallet.Api.Core.Options;
 using NovaWallet.Api.Core.Services;
 using NovaWallet.Api.Extensions;
 using NovaWallet.Api.Features.Admin;
@@ -60,13 +62,35 @@ try
     // 2. Application Startup Inspections & Migrations
     // =========================================================================
 
+    // One-shot migration mode: `dotnet NovaWallet.Api.dll --migrate-only` applies
+    // pending EF Core migrations and exits immediately - no Kestrel host, no
+    // validator/options checks below. This is what docker-compose.yml's dedicated
+    // `migrator` service runs, so schema changes happen as an isolated, observable
+    // step that completes (and the container exits 0) before `api` ever starts,
+    // rather than being folded into the API process's own boot sequence.
+    if (args.Contains("--migrate-only", StringComparer.OrdinalIgnoreCase))
+    {
+        await app.ApplyDatabaseMigrationsAsync();
+        return;
+    }
+
     // Fail fast if any validator's constructor can't be resolved
     using (var scope = app.Services.CreateScope())
     {
         scope.ServiceProvider.GetRequiredService<IEnumerable<IValidator>>();
     }
 
-    if (app.Environment.IsDevelopment())
+    // Whether `api` itself also applies migrations on boot is now an explicit,
+    // environment-agnostic config flag (StartupOptions.ApplyMigrationsOnStartup,
+    // default false) rather than being tied to ASPNETCORE_ENVIRONMENT=Development.
+    // In the Docker Compose stack this stays off - the `migrator` service above
+    // already guarantees the schema is current before `api` is started - but the
+    // flag remains available for non-Compose scenarios (e.g. `dotnet run` against
+    // a fresh local database) where running the one-shot mode separately isn't
+    // convenient.
+    var startupOptions = app.Services.GetRequiredService<IOptions<StartupOptions>>().Value;
+
+    if (startupOptions.ApplyMigrationsOnStartup)
     {
         await app.ApplyDatabaseMigrationsAsync();
     }

@@ -359,7 +359,7 @@ touched to add this.
 
 ### Running via Docker Compose
 
-Copy `.env.example` to `.env` (a working `.env` with dev-only placeholder values already ships in this repo, so this step is optional) and start the **entire** stack — API, PostgreSQL, Redis, RabbitMQ, the OpenTelemetry Collector, and its local OpenObserve sink — with a single, unconditional command (no Compose profile to remember):
+Copy `.env.example` to `.env` (a working `.env` with dev-only placeholder values already ships in this repo, so this step is optional) and start the **entire** stack — PostgreSQL, Redis, RabbitMQ, a one-shot database migration step, the API, the OpenTelemetry Collector, and its local OpenObserve sink — with a single, unconditional command (no Compose profile to remember):
 
 ```bash
 docker compose up --build
@@ -367,7 +367,14 @@ docker compose up --build
 
 The Collector forwards traces/metrics/logs to OpenObserve (`ops/otel-collector-config.yaml`), running locally in the same Compose network — no third-party account needed. Once up, open `http://localhost:5080` and log in with `ZO_ROOT_USER_EMAIL` / `ZO_ROOT_USER_PASSWORD` from `.env` (dev-only placeholders ship by default, no setup required) — traces, metrics, and logs land under the `default` org/stream. As noted above, RabbitMQ and the Collector/OpenObserve run unconditionally but aren't consumed by any code path yet — they start regardless.
 
-> **Pending migration note:** `Migrations/` currently only covers schema up through the `OutboxEnums` migration. The `WalletTransfer` and `LedgerSnapshot` tables (added in later iterations — see §3) do not have migrations yet, so against a fresh volume `POST /api/v1/wallets/transfer` and the `ReconciliationWorker` will fail until those migrations are hand-authored and applied. Deposits, wallet creation, and wallet reads work end-to-end today.
+### Database Migrations
+
+Migrations no longer piggyback on `ASPNETCORE_ENVIRONMENT=Development` — that coupling meant the only way to get automatic migrations in a container was to also silently opt every other `IsDevelopment()`-gated behavior (e.g. Serilog's console sink) into "dev mode," for a reason unrelated to logging. Two independent, explicit mechanisms replace it:
+
+* **A dedicated one-shot `migrator` Compose service.** It builds the same image as `api`, runs it as `dotnet NovaWallet.Api.dll --migrate-only` (a mode added to `Program.cs` that applies pending EF Core migrations and exits immediately, without starting Kestrel), and exits 0. `api` declares `depends_on: migrator: condition: service_completed_successfully`, so the schema is guaranteed current before the API ever starts — as an isolated, observable step in `docker compose up`'s output, not folded into the API container's own boot logs. `api` itself now runs as `ASPNETCORE_ENVIRONMENT=Production` in Compose, a genuine choice rather than a migration side-effect.
+* **`Startup:ApplyMigrationsOnStartup`** (`appsettings.json`, default `false`). An explicit, environment-agnostic config flag for scenarios outside Compose — e.g. `dotnet run` against a fresh local database — where invoking the one-shot mode separately isn't convenient. It stays off in the Docker stack, since the `migrator` service already covers it. `appsettings.Development.json` overrides it to `true`, so `dotnet run`/Visual Studio F5 debugging (both use `ASPNETCORE_ENVIRONMENT=Development` per `launchSettings.json`) keeps auto-migrating against a fresh local database exactly as it did before this flag existed.
+
+> **Pending migration note:** `Migrations/` currently only covers schema up through the `OutboxEnums` migration. The `WalletTransfer` and `LedgerSnapshot` tables (added in later iterations — see §3) do not have migrations yet — the `migrator` service still runs and exits 0 (there's simply nothing pending for those tables to apply) — so against a fresh volume `POST /api/v1/wallets/transfer` and the `ReconciliationWorker` will fail once those migrations are hand-authored and until they're applied. Deposits, wallet creation, and wallet reads work end-to-end today.
 
 Once started:
 
