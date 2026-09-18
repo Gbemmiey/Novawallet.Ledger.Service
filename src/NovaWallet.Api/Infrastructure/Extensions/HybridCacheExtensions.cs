@@ -31,7 +31,7 @@ namespace NovaWallet.Api.Infrastructure.Extensions
             {
                 var redisUri = configuration[NovaWalletCacheConstants.RedisUriKey]!;
 
-                var instanceName = configuration[NovaWalletCacheConstants.RedisApplicationNameKey] ?? "FintechCardIssuance:Shared";
+                var instanceName = configuration[NovaWalletCacheConstants.RedisApplicationNameKey] ?? "NovaWallet:Shared";
 
                 var config = ConfigurationOptions.Parse(redisUri);
 

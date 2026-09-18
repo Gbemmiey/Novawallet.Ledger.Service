@@ -16,6 +16,7 @@ namespace NovaWallet.Api.Features.Transfers
                 .WithName("SubmitTransfer")
                 .WithTags("Transfers")
                 .RequireAuthorization()
+                .RequireRateLimiting(NovaWalletConstants.RateLimitingConstants.PerPartnerPolicy)
                 .Produces<ServiceApiResponse<WalletTransferResponse>>(StatusCodes.Status200OK)
                 .WithOpenApi(operation =>
                 {

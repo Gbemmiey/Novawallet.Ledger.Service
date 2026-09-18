@@ -1,4 +1,6 @@
 ﻿using Microsoft.EntityFrameworkCore;
+using NovaWallet.Api.Core.Configuration;
+using NovaWallet.Api.Core.Dto;
 using NovaWallet.Api.Core.Dto.Login;
 using NovaWallet.Api.Core.Enums;
 using NovaWallet.Api.Core.Models;
@@ -137,6 +139,85 @@ namespace NovaWallet.Api.Application.Services
             }
 
             return ServiceApiResponse<CreateWalletResponse>.CreateSuccess(wallet);
+        }
+
+        public async Task<ServiceApiResponse<PagedResponse<AccountEntryResponse>>> GetWalletStatement(
+            Guid walletId,
+            int pageNumber,
+            int pageSize,
+            DateTime? fromDate,
+            DateTime? toDate,
+            CancellationToken cancellationToken)
+        {
+            var userId = _requestContext.UserId;
+
+            if (userId is null)
+            {
+                return ServiceApiResponse<PagedResponse<AccountEntryResponse>>.CreateFailure(ResponseCodes.AccessDenied);
+            }
+
+            var wallet = await _novaWalletDbContext.Wallets
+                .AsNoTracking()
+                .Where(w => w.Id == walletId)
+                .Select(w => new { w.UserId, w.AccountId })
+                .FirstOrDefaultAsync(cancellationToken);
+
+            if (wallet is null)
+            {
+                return ServiceApiResponse<PagedResponse<AccountEntryResponse>>.CreateFailure(ResponseCodes.NoRecordReturned);
+            }
+
+            // Ownership: a valid token alone does not authorize reading any wallet's statement,
+            // only the caller's own (mirrors TransferService's source-wallet ownership guard).
+            if (wallet.UserId != userId.Value)
+            {
+                _logger.LogWarning(
+                    "Wallet statement rejected - caller {CallerUserId} does not own Wallet {WalletId}.",
+                    userId.Value,
+                    walletId);
+
+                return ServiceApiResponse<PagedResponse<AccountEntryResponse>>.CreateFailure(ResponseCodes.RequestNotAllowed);
+            }
+
+            var clampedPageNumber = pageNumber < 1 ? 1 : pageNumber;
+            var clampedPageSize = pageSize < 1
+                ? NovaWalletConstants.PaginationConstants.DefaultPageSize
+                : Math.Min(pageSize, NovaWalletConstants.PaginationConstants.MaxPageSize);
+
+            var query = _novaWalletDbContext.AccountEntries
+                .AsNoTracking()
+                .Where(e => e.AccountId == wallet.AccountId);
+
+            if (fromDate is not null)
+            {
+                query = query.Where(e => e.CreatedAt >= fromDate.Value);
+            }
+
+            if (toDate is not null)
+            {
+                query = query.Where(e => e.CreatedAt <= toDate.Value);
+            }
+
+            // Uses IX_AccountEntries_AccountId_CreatedAt (AccountEntryConfiguration) - built
+            // for exactly this newest-first, per-account paginated query.
+            var totalCount = await query.CountAsync(cancellationToken);
+
+            var items = await query
+                .OrderByDescending(e => e.CreatedAt)
+                .Skip((clampedPageNumber - 1) * clampedPageSize)
+                .Take(clampedPageSize)
+                .Select(e => new AccountEntryResponse
+                {
+                    Id = e.Id,
+                    AmountKobo = e.AmountKobo,
+                    EntryType = e.EntryType,
+                    TransParticulars = e.TransParticulars,
+                    CreatedAt = e.CreatedAt
+                })
+                .ToListAsync(cancellationToken);
+
+            return ServiceApiResponse<PagedResponse<AccountEntryResponse>>.CreateSuccess(
+                new PagedResponse<AccountEntryResponse>(items, totalCount, clampedPageNumber, clampedPageSize));
         }
 
         private static readonly Expression<Func<Wallet, CreateWalletResponse>> WalletResponseProjection =

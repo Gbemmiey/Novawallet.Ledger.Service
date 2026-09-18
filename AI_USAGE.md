@@ -113,6 +113,47 @@ since `ExporterUri` was already bound from config and `REDIS_URI` already
 flowed straight into `ConfigurationOptions.Parse`, which parses a `password=`
 token natively.
 
+### Prompt 3 — "Rate limit the transfer endpoint. Wallet Credit is an Admin OP"
+### (revised, same session: "...doesn't require any access token - anonymous")
+
+The stakeholder's first message asked for `/credit` to become an **admin-gated**
+operation. Before implementing anything, the AI re-checked `DepositService` for
+any dependency on caller identity and found none — it derives everything from
+the NIP payload itself (beneficiary account number, `SessionId`, external
+transaction reference), the same fact pattern that had already shaped the
+Docker-compose RabbitMQ decision above. It flagged this back rather than
+silently implementing "Admin OP" as asked. The very next message from the
+stakeholder corrected the instruction outright: `/credit` should be
+**anonymous** — an external NIP-switch callback, not a customer- or
+admin-authenticated action.
+
+This is kept in the record rather than quietly implemented as if "anonymous"
+had been the request from the start, for the same reason as the RabbitMQ
+addendum above: the honest history is that the instruction was wrong once and
+corrected, not that the AI inferred the right answer unprompted. What *was*
+caught unprompted, while planning the correction: the rate-limiter
+registration method still carried its original leftover name from an earlier
+placeholder domain that never existed anywhere else in this codebase, and it
+was about to gain a second, unrelated policy (`PerPartnerPolicy`, for
+`/transfer`'s new rate limit) alongside the existing `InternalAdminPolicy`.
+Rather than let a second policy accumulate under a misleading name, the AI
+proposed renaming the method to `RegisterRateLimitingPolicies` as an explicit
+(separately-confirmed) part of the change, not a silent drive-by rename
+bundled into an unrelated diff. A follow-up request afterward asked for every
+remaining trace of that original placeholder name to be swept from the repo;
+that sweep also caught an unrelated leftover default Redis cache instance-name
+string in `HybridCacheExtensions.cs` that had inherited the same placeholder
+domain name and was updated to `NovaWallet:Shared`.
+
+Net implementation: `/credit` moved to `.AllowAnonymous()` (which, confirmed
+by reading `AuthenticationExtensions`, correctly overrides the app-wide
+`FallbackPolicy.RequireAuthenticatedUser()` — standard ASP.NET Core behavior,
+not something requiring a pipeline change); `/transfer` gained
+`RequireRateLimiting(PerPartnerPolicy)`, a 10-req/min sliding window
+partitioned by the caller's JWT `sub` claim (safe to key on identity rather
+than IP specifically because `UseAuthorization()` precedes `UseRateLimiter()`
+in `Program.cs`'s pipeline).
+
 ## A specific case where AI output was wrong/unsafe for a financial system
 
 **The daily transfer limit's `INSERT` branch didn't enforce the limit.**

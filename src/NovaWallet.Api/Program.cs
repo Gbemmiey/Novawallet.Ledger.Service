@@ -2,6 +2,7 @@ using FluentValidation;
 using Microsoft.FeatureManagement;
 using NovaWallet.Api.Core.Services;
 using NovaWallet.Api.Extensions;
+using NovaWallet.Api.Features.Admin;
 using NovaWallet.Api.Features.Auth;
 using NovaWallet.Api.Features.Deposits;
 using NovaWallet.Api.Features.Transfers;
@@ -50,8 +51,8 @@ try
     builder.Services.AddEndpointsApiExplorer();
     builder.Services.AddJwtAuthenticationAndAuthorization(builder.Configuration);
 
-    // Register customized partner rate limiting policy extension
-    builder.Services.RegisterCardIssuanceLimiting();
+    // Register named rate limiting policies (InternalAdminPolicy, PerPartnerPolicy)
+    builder.Services.RegisterRateLimitingPolicies();
 
     var app = builder.Build();
 
@@ -115,6 +116,9 @@ try
         .MapWalletEndpoints()
         .MapDepositEndpoints()
         .MapTransferEndpoints();
+
+    app.MapGroup("/api/v1/admin")
+       .MapAdminEndpoints();
 
     app.Run();
 }

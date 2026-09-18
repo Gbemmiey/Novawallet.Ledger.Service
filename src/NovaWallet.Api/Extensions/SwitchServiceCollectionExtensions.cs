@@ -43,6 +43,7 @@ namespace NovaWallet.Api.Extensions
             services.AddScoped<IWalletService, WalletService>();
             services.AddScoped<IDepositService, DepositService>();
             services.AddScoped<ITransferService, TransferService>();
+            services.AddScoped<IAdminService, AdminService>();
             services.AddHostedService<DepositConsumer>();
             services.AddHostedService<ReconciliationWorker>();
             return services;

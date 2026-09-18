@@ -22,7 +22,7 @@ namespace NovaWallet.Api.Features.Deposits
                 .MapPost("/credit", SubmitDeposit)
                 .WithName("SubmitDeposit")
                 .WithTags("Deposits")
-                .RequireAuthorization()
+                .AllowAnonymous()
                 .Produces<ServiceApiResponse<NipSingleCreditResponse>>(StatusCodes.Status202Accepted)
                 .WithValidation<NipSingleCreditRequest>();
 
@@ -34,6 +34,14 @@ namespace NovaWallet.Api.Features.Deposits
         /// durably records the deposit request, then returns immediately with HTTP 202 Accepted -
         /// the actual wallet crediting happens asynchronously via the deposit outbox/consumer, so
         /// this handler must not block on it (NIP callbacks time out quickly).
+        ///
+        /// Intentionally <see cref="AllowAnonymous"/>: this is an inbound callback from the NIP
+        /// switch, not a customer-authenticated action - the switch does not carry (and cannot be
+        /// expected to obtain) this API's own bearer tokens, mirroring real inbound-credit
+        /// integration patterns. Caller identity/ownership is irrelevant here; trust is instead
+        /// placed in the NIP payload itself (beneficiary account number, session ID, external
+        /// transaction reference), which is exactly what <see cref="IDepositService"/> validates
+        /// against.
         /// </summary>
         private static async Task<IResult> SubmitDeposit(
             NipSingleCreditRequest nipSingleCreditRequest,
