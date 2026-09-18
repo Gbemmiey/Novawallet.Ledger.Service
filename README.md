@@ -301,9 +301,9 @@ CREATE INDEX "IX_LedgerSnapshot_IsBalanced_Partial"
 
 * **Framework:** .NET 9 Web API (C# 13)
 * **Primary Database:** PostgreSQL 16
-* **Cache & Idempotency:** Redis 7
-* **Message Broker:** RabbitMQ 3.13 — listed for architectural completeness; **not yet wired into any running code path** (no `ConnectionFactory`/publisher/consumer exists today, only OTel trace-context helper classes reference RabbitMQ types for future use). Available via the opt-in `observability` Compose profile below, not started by default.
-* **Observability:** OpenTelemetry Collector (forwarding to Grafana Cloud) + Prometheus — the app exports OTLP traces/metrics directly and Prometheus scrapes `/metrics` on the API itself regardless of whether a collector is present (the OTLP exporter is non-blocking/async on connection failure). The Collector is likewise behind the `observability` profile, not started by default.
+* **Cache & Idempotency:** Redis 8, password-protected (`--requirepass`, no anonymous access even in local dev)
+* **Message Broker:** RabbitMQ 3.13 — part of the default `docker compose up --build` stack by explicit stakeholder request; **not yet wired into any running code path** (no `ConnectionFactory`/publisher/consumer exists today, only OTel trace-context helper classes reference RabbitMQ types for future use). It runs, but nothing talks to it yet.
+* **Observability:** OpenTelemetry Collector (forwarding to Grafana Cloud) + Prometheus — the app exports OTLP traces/metrics directly and Prometheus scrapes `/metrics` on the API itself regardless of whether a collector is present (the OTLP exporter is non-blocking/async on connection failure). The Collector's endpoint (`ObservabilityOptions__ExporterUri`) is fully config/env-driven via `OBSERVABILITY_EXPORTER_URI`. The Collector itself stays behind the opt-in `observability` Compose profile, not started by default, since pointing it at a real backend requires third-party Grafana Cloud credentials.
 * **Error Format:** RFC 7807 Problem Details
 
 ---
@@ -317,13 +317,13 @@ CREATE INDEX "IX_LedgerSnapshot_IsBalanced_Partial"
 
 ### Running via Docker Compose
 
-Copy `.env.example` to `.env` (a working `.env` with dev-only placeholder values already ships in this repo, so this step is optional) and start the core stack — API, PostgreSQL, Redis — with a single command:
+Copy `.env.example` to `.env` (a working `.env` with dev-only placeholder values already ships in this repo, so this step is optional) and start the default stack — API, PostgreSQL, Redis, RabbitMQ — with a single command:
 
 ```bash
 docker compose up --build
 ```
 
-The optional RabbitMQ + OpenTelemetry Collector services (see the stack note above) are gated behind a Compose `profile` and an override file, since nothing in the running app depends on them:
+The optional OpenTelemetry Collector (see the stack note above) is gated behind a Compose `profile` and an override file, since nothing in the running app depends on it and it requires real third-party Grafana Cloud credentials to be useful:
 
 ```bash
 docker compose --profile observability -f docker-compose.yml -f docker-compose.observability.yml up --build

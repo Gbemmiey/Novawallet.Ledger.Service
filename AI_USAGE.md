@@ -94,6 +94,25 @@ This is the pattern worth naming: the useful AI behavior here wasn't
 generating YAML — it was refusing to let documentation and infrastructure
 diverge quietly, and asking instead of guessing which one should win.
 
+**Addendum (2026-09-18) — the decision was later revisited, not silently
+reversed.** The stakeholder subsequently asked, explicitly, for RabbitMQ to be
+included in the default stack "nonetheless" — i.e. despite the gap above still
+being true. Rather than editing the original example to pretend RabbitMQ had
+always been default, the AI moved the `rabbitmq` service from
+`docker-compose.observability.yml` into `docker-compose.yml` (dropping its
+`profiles: ["observability"]` gate) and updated every place that had asserted
+"RabbitMQ is opt-in" (README, both compose files' header comments) to instead
+say "RabbitMQ runs by explicit request, still consumed by no code path." The
+one thing that did **not** change: no `depends_on: rabbitmq` was added to the
+`api` service, because that would still be asserting a dependency that
+doesn't exist in code. Same session, same request, also used to make
+`ObservabilityOptions__ExporterUri` env-driven (it was previously hardcoded
+in the observability overlay) and to move Redis to version 8 with
+`--requirepass` authentication enforced — neither change altered any C# code,
+since `ExporterUri` was already bound from config and `REDIS_URI` already
+flowed straight into `ConfigurationOptions.Parse`, which parses a `password=`
+token natively.
+
 ## A specific case where AI output was wrong/unsafe for a financial system
 
 **The daily transfer limit's `INSERT` branch didn't enforce the limit.**
