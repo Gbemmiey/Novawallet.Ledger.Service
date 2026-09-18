@@ -46,13 +46,37 @@ namespace NovaWallet.Api.Application.Services
         /// times the whole webhook-accept path and records
         /// <c>novawallet.deposit.requests</c>/<c>.request.duration</c>, tagged by the resulting
         /// <see cref="IServiceApiResponse.ResponseCode"/>, without touching the idempotency/DB
-        /// logic itself.
+        /// logic itself. Also opens the <c>deposit.accept</c> span: it is a child of the ASP.NET Core
+        /// request span, and its <c>traceparent</c> is what gets stored on the outbox row so the
+        /// <c>DepositConsumer</c>'s <c>deposit.settle</c> span continues the same trace.
         /// </summary>
         public async Task<ServiceApiResponse<NipSingleCreditResponse>> SubmitDepositRequest(NipSingleCreditRequest nipSingleCreditRequest, CancellationToken cancellationToken)
         {
             var startTimestamp = Stopwatch.GetTimestamp();
 
-            var response = await SubmitDepositRequestCoreAsync(nipSingleCreditRequest, cancellationToken);
+            using var activity = NovaWalletTracing.Source.StartActivity("deposit.accept", ActivityKind.Internal);
+            activity?.SetTag("deposit.session_id", nipSingleCreditRequest.SessionId);
+            activity?.SetTag("deposit.transaction_reference", nipSingleCreditRequest.TransactionReference);
+            activity?.SetTag("deposit.amount_kobo", nipSingleCreditRequest.AmountKobo);
+
+            ServiceApiResponse<NipSingleCreditResponse> response;
+
+            try
+            {
+                response = await SubmitDepositRequestCoreAsync(nipSingleCreditRequest, cancellationToken);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                NovaWalletTracing.RecordException(activity, ex);
+                throw;
+            }
+
+            activity?.SetTag("deposit.outcome", response.ResponseCode);
+
+            if (!response.IsSuccessful())
+            {
+                activity?.SetStatus(ActivityStatusCode.Error, response.ResponseCode);
+            }
 
             _metrics.RecordDepositRequest(response.ResponseCode, Stopwatch.GetElapsedTime(startTimestamp));
 
@@ -120,6 +144,7 @@ namespace NovaWallet.Api.Application.Services
             {
                 _logger.LogInformation("Deposit replay detected for SessionId {SessionId}. Returning original result.",
                     nipSingleCreditRequest.SessionId);
+                Activity.Current?.SetTag("deposit.replay", true);
 
                 return ServiceApiResponse<NipSingleCreditResponse>.CreateSuccess(
                     ToResponse(existingBySessionId, nipSingleCreditRequest.Narration));
@@ -157,7 +182,11 @@ namespace NovaWallet.Api.Application.Services
                         originatingAccountNumber: nipSingleCreditRequest.OriginatingAccountNumber,
                         originatingBankCode: nipSingleCreditRequest.OriginatingBankCode);
 
-                    var depositOutbox = DepositOutbox.Create(externalCreditRequest.Id);
+                    // Carry the trace across the outbox: the polling consumer has no HTTP request
+                    // to inherit context from, so it parents its settlement span on this value.
+                    var depositOutbox = DepositOutbox.Create(
+                        externalCreditRequest.Id,
+                        NovaWalletTracing.CurrentTraceParent());
 
                     _novaWalletDbContext.ExternalCreditRequests.Add(externalCreditRequest);
                     _novaWalletDbContext.DepositOutboxEntries.Add(depositOutbox);
@@ -194,6 +223,7 @@ namespace NovaWallet.Api.Application.Services
                         _logger.LogInformation(
                             "Deposit replay detected after unique constraint race for SessionId {SessionId}. Returning original result.",
                             nipSingleCreditRequest.SessionId);
+                        Activity.Current?.SetTag("deposit.replay", true);
 
                         return ServiceApiResponse<NipSingleCreditResponse>.CreateSuccess(
                             ToResponse(raceWinner, nipSingleCreditRequest.Narration));

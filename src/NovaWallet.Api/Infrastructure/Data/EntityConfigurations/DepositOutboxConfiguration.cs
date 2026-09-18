@@ -31,6 +31,10 @@ namespace NovaWallet.Api.Infrastructure.Data.EntityConfigurations
 
             builder.Property(d => d.DateProcessed);
 
+            // W3C traceparent is a fixed 55 chars ("00-<32hex>-<16hex>-<2hex>"); 64 leaves headroom.
+            builder.Property(d => d.TraceParent)
+                .HasMaxLength(64);
+
             builder.HasOne(d => d.ExternalCreditRequest)
                 .WithMany(x => x.OutboxEntries)
                 .HasForeignKey(d => d.ExternalCreditRequestId)

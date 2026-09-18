@@ -32,8 +32,9 @@ namespace NovaWallet.Api.Infrastructure.Extensions.OpenTelemetry
         /// Thrown when the "Observability" configuration section is missing or required fields are invalid.
         /// </exception>
         /// <remarks>
-        /// Web applications do not require ActivitySources — ASP.NET Core instrumentation
-        /// is configured automatically.
+        /// Web applications do not need ActivitySources for ASP.NET Core instrumentation, which
+        /// is configured automatically. The application's own <see cref="NovaWalletTracing.SourceName"/>
+        /// source (deposit accept -> settle spans) is registered here so its spans are exported.
         /// <code>
         /// var builder = WebApplication.CreateBuilder(args);
         /// builder.AddObservability();
@@ -104,7 +105,7 @@ namespace NovaWallet.Api.Infrastructure.Extensions.OpenTelemetry
             builder.Services.ConfigureDistributedTracingAndMetrics(
                 env: env,
                 observabilityOptions: options,
-                activitySources: new List<string>());
+                activitySources: new List<string> { NovaWalletTracing.SourceName });
 
             Log.Logger = new LoggerConfiguration()
                 .ConfigureApiLogging(options, env)

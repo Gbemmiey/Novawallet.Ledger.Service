@@ -23,8 +23,15 @@ namespace NovaWallet.Api.Core.Models
         public DateTime CreatedAt { get; }
         public DateTime? DateProcessed { get; private set; }
 
+        /// <summary>
+        /// W3C <c>traceparent</c> of the webhook request that wrote this row, so the polling
+        /// <c>DepositConsumer</c> can continue the same distributed trace across the outbox.
+        /// Null for rows written before tracing was added, or when no activity was ambient.
+        /// </summary>
+        public string? TraceParent { get; }
+
         private DepositOutbox(Guid id, Guid externalCreditRequestId, OutboxStatus status, int numberOfRetries,
-            DateTime createdAt, DateTime? dateProcessed)
+            DateTime createdAt, DateTime? dateProcessed, string? traceParent)
         {
             Id = id;
             ExternalCreditRequestId = externalCreditRequestId;
@@ -32,9 +39,10 @@ namespace NovaWallet.Api.Core.Models
             NumberOfRetries = numberOfRetries;
             CreatedAt = createdAt;
             DateProcessed = dateProcessed;
+            TraceParent = traceParent;
         }
 
-        public static DepositOutbox Create(Guid externalCreditRequestId)
+        public static DepositOutbox Create(Guid externalCreditRequestId, string? traceParent = null)
         {
             if (externalCreditRequestId == Guid.Empty)
                 throw new ArgumentException("ExternalCreditRequestId is required.", nameof(externalCreditRequestId));
@@ -45,7 +53,8 @@ namespace NovaWallet.Api.Core.Models
                 status: OutboxStatus.Pending,
                 numberOfRetries: 0,
                 createdAt: DateTime.UtcNow,
-                dateProcessed: null);
+                dateProcessed: null,
+                traceParent: traceParent);
         }
 
         public void MarkProcessed()

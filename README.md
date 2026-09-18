@@ -197,7 +197,8 @@ CREATE TABLE "DepositOutbox" (
     "Status" VARCHAR(20) NOT NULL DEFAULT 'Pending', -- Pending, Processed, Failed
     "NumberOfRetries" INT NOT NULL DEFAULT 0, -- transient-failure attempts; capped at 3, then Status -> Failed
     "CreatedAt" TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "DateProcessed" TIMESTAMPTZ -- set once the row reaches a terminal state (Processed or Failed)
+    "DateProcessed" TIMESTAMPTZ, -- set once the row reaches a terminal state (Processed or Failed)
+    "TraceParent" VARCHAR(64) -- W3C traceparent of the webhook request; lets DepositConsumer continue the same trace (nullable: pre-tracing rows have none)
 );
 
 -- Transfer Outbox for Asynchronous Notification / Event Publishing
@@ -349,6 +350,38 @@ narrations — to avoid unbounded cardinality in the metrics backend. Instrument
 each public entry point via a thin timing wrapper around the existing implementation (renamed to
 a private `...CoreAsync`/`...Core...` method), so none of the money-movement logic itself was
 touched to add this.
+
+### Tracing a Credit: Webhook to Funds Applied
+
+The credit path crosses a database hand-off (`DepositService` writes `ExternalCreditRequest` +
+`DepositOutbox`; the polling `DepositConsumer` settles it later), and nothing carries trace context
+across a table. So the webhook stores its W3C `traceparent` in `DepositOutbox.TraceParent`, and the
+consumer parents its settlement span on it, producing **one continuous trace** (custom
+`ActivitySource` `NovaWallet.Deposits`, `Infrastructure/Extensions/OpenTelemetry/NovaWalletTracing.cs`,
+registered in `ObservabilityExtensions`):
+
+```
+POST /api/v1/wallets/credit                (ASP.NET Core)
+└─ deposit.accept                          (DepositService; EF/Npgsql spans for the inserts)
+   └─ deposit.settle                       (DepositConsumer, kind=Consumer; possibly seconds later)
+      ├─ deposit.lock_outbox               (SELECT ... FOR UPDATE on the outbox row)
+      ├─ deposit.credit_wallet             (the guarded atomic UPDATE on Wallets)
+      └─ deposit.post_journal              (journal + audit insert and COMMIT)
+```
+
+| Span | Key attributes |
+|---|---|
+| `deposit.accept` | `deposit.session_id`, `deposit.transaction_reference`, `deposit.amount_kobo`, `deposit.outcome` (response code), `deposit.replay` |
+| `deposit.settle` | the same ids, plus `deposit.outbox_id`, `deposit.retry_count`, `wallet.id`, `deposit.outcome` (same labels as the settlement metric), `deposit.retries_exhausted` |
+| `deposit.credit_wallet` | `wallet.id`, `deposit.amount_kobo`, `deposit.credit_applied` |
+| `deposit.post_journal` | `journal_entry.id` |
+
+A failed attempt marks `deposit.settle` as Error with an `exception` event, and each recorded retry adds a
+`retry_recorded` event to it; retries of the same row all attach to the original trace. Permanent business
+rejections (`rejected_*`) are also flagged Error. To find a credit in OpenObserve, search traces for
+`deposit.session_id = '<NIP session id>'`. Unlike metrics, span attributes have no cardinality limit,
+so ids are fine here; account numbers are still never attached. Rows written before `TraceParent`
+existed (or with no ambient activity) simply start a new trace at `deposit.settle`.
 
 ---
 

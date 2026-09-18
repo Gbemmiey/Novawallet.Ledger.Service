@@ -121,22 +121,27 @@ namespace NovaWallet.Api.Workers
 
         private async Task ProcessPendingBatchAsync(CancellationToken stoppingToken)
         {
-            List<Guid> pendingOutboxIds;
+            // TraceParent is read here, alongside the Id, because the settlement span must be
+            // started with its parent already known (an Activity's parent can't be changed after
+            // it starts) - i.e. before the outbox row is locked and loaded inside the transaction.
+            List<(Guid Id, string? TraceParent)> pendingOutboxes;
 
             await using (var scope = _scopeFactory.CreateAsyncScope())
             {
                 var db = scope.ServiceProvider.GetRequiredService<NovaWalletDbContext>();
 
-                pendingOutboxIds = await db.DepositOutboxEntries
+                var rows = await db.DepositOutboxEntries
                     .AsNoTracking()
                     .Where(o => o.Status == OutboxStatus.Pending)
                     .OrderBy(o => o.CreatedAt)
-                    .Select(o => o.Id)
+                    .Select(o => new { o.Id, o.TraceParent })
                     .Take(Math.Max(1, _options.BatchSize))
                     .ToListAsync(stoppingToken);
+
+                pendingOutboxes = rows.Select(r => (r.Id, r.TraceParent)).ToList();
             }
 
-            foreach (var outboxId in pendingOutboxIds)
+            foreach (var (outboxId, traceParent) in pendingOutboxes)
             {
                 stoppingToken.ThrowIfCancellationRequested();
 
@@ -148,7 +153,7 @@ namespace NovaWallet.Api.Workers
 
                 try
                 {
-                    await ProcessOutboxEntryAsync(db, outboxId, stoppingToken);
+                    await ProcessOutboxEntryAsync(db, outboxId, traceParent, stoppingToken);
                 }
                 catch (OperationCanceledException)
                 {
@@ -170,10 +175,17 @@ namespace NovaWallet.Api.Workers
             TransientFailure
         }
 
-        private async Task ProcessOutboxEntryAsync(NovaWalletDbContext db, Guid outboxId, CancellationToken cancellationToken)
+        private async Task ProcessOutboxEntryAsync(NovaWalletDbContext db, Guid outboxId, string? traceParent, CancellationToken cancellationToken)
         {
             var strategy = db.Database.CreateExecutionStrategy();
             var startTimestamp = Stopwatch.GetTimestamp();
+
+            // Continues the webhook's trace (see NovaWalletTracing): parented on the traceparent
+            // stored with the outbox row, so accept -> settle is one trace. Held open across the
+            // retry-bookkeeping call at the bottom so that shows up under this span too. Every
+            // EF Core / Npgsql span below becomes its child automatically via Activity.Current.
+            using var activity = NovaWalletTracing.StartConsumerActivity("deposit.settle", traceParent);
+            activity?.SetTag("deposit.outbox_id", outboxId);
 
             // Set by whichever branch below actually returns/throws, so the single metrics
             // recording call after strategy.ExecuteAsync below can tag the settlement
@@ -190,9 +202,14 @@ namespace NovaWallet.Api.Workers
                     // Lock the outbox row first. If another instance of this worker is already
                     // settling the same row, this blocks until that transaction commits, then the
                     // re-check below sees Status == Processed and exits as a safe no-op.
-                    var outbox = await db.DepositOutboxEntries
-                        .FromSqlInterpolated($"SELECT * FROM \"DepositOutbox\" WHERE \"Id\" = {outboxId} FOR UPDATE")
-                        .FirstOrDefaultAsync(cancellationToken);
+                    DepositOutbox? outbox;
+
+                    using (NovaWalletTracing.Source.StartActivity("deposit.lock_outbox"))
+                    {
+                        outbox = await db.DepositOutboxEntries
+                            .FromSqlInterpolated($"SELECT * FROM \"DepositOutbox\" WHERE \"Id\" = {outboxId} FOR UPDATE")
+                            .FirstOrDefaultAsync(cancellationToken);
+                    }
 
                     if (outbox is null || outbox.Status != OutboxStatus.Pending)
                     {
@@ -201,8 +218,14 @@ namespace NovaWallet.Api.Workers
                         return SettlementOutcome.Handled;
                     }
 
+                    activity?.SetTag("deposit.retry_count", outbox.NumberOfRetries);
+
                     var externalCreditRequest = await db.ExternalCreditRequests
                         .FirstAsync(x => x.Id == outbox.ExternalCreditRequestId, cancellationToken);
+
+                    activity?.SetTag("deposit.session_id", externalCreditRequest.SessionId);
+                    activity?.SetTag("deposit.transaction_reference", externalCreditRequest.TransactionReference);
+                    activity?.SetTag("deposit.amount_kobo", externalCreditRequest.AmountKobo);
 
                     if (externalCreditRequest.Status == DepositStatus.Completed)
                     {
@@ -244,6 +267,8 @@ namespace NovaWallet.Api.Workers
                         return SettlementOutcome.Handled;
                     }
 
+                    activity?.SetTag("wallet.id", beneficiary.Id);
+
                     var settlementAccountId = await EnsureSystemAccountAsync(
                         db, NovaWalletConstants.SystemAccounts.NipSettlementAccountNumber, AccountType.Asset, cancellationToken);
 
@@ -270,8 +295,19 @@ namespace NovaWallet.Api.Workers
                     // vanished between the beneficiary lookup above and this statement (an
                     // anomaly, not a business outcome) - the status re-read just below tells
                     // these apart, the same way TransferService.ResolveCreditFailureAsync does.
-                    var newBalanceKobo = await TryCreditWalletAtomicAsync(
-                        db, beneficiary.Id, externalCreditRequest.AmountKobo, cancellationToken);
+                    long? newBalanceKobo;
+
+                    using (var creditActivity = NovaWalletTracing.Source.StartActivity("deposit.credit_wallet"))
+                    {
+                        creditActivity?.SetTag("wallet.id", beneficiary.Id);
+                        creditActivity?.SetTag("deposit.amount_kobo", externalCreditRequest.AmountKobo);
+
+                        newBalanceKobo = await TryCreditWalletAtomicAsync(
+                            db, beneficiary.Id, externalCreditRequest.AmountKobo, cancellationToken);
+
+                        // Zero rows affected: wallet not Active (or vanished) - see handling below.
+                        creditActivity?.SetTag("deposit.credit_applied", newBalanceKobo is not null);
+                    }
 
                     if (newBalanceKobo is null)
                     {
@@ -324,8 +360,13 @@ namespace NovaWallet.Api.Workers
                         balanceAfterKobo: balanceAfterKobo,
                         correlationId: journalEntry.Id));
 
-                    await db.SaveChangesAsync(cancellationToken);
-                    await transaction.CommitAsync(cancellationToken);
+                    using (var postActivity = NovaWalletTracing.Source.StartActivity("deposit.post_journal"))
+                    {
+                        postActivity?.SetTag("journal_entry.id", journalEntry.Id);
+
+                        await db.SaveChangesAsync(cancellationToken);
+                        await transaction.CommitAsync(cancellationToken);
+                    }
 
                     _logger.LogInformation(
                         "Deposit settled. SessionId: {SessionId}, TransactionReference: {TransactionReference}, WalletId: {WalletId}, AmountKobo: {AmountKobo}, JournalEntryId: {JournalEntryId}",
@@ -363,6 +404,8 @@ namespace NovaWallet.Api.Workers
                     // relying on implicit dispose-rollback (mirrors TransferService.ProcessTransferAsync).
                     await transaction.RollbackAsync(CancellationToken.None);
 
+                    NovaWalletTracing.RecordException(activity, ex);
+
                     _logger.LogError(
                         ex,
                         "Failed to settle DepositOutbox {DepositOutboxId} due to a transient error. Recording a failed attempt.",
@@ -375,6 +418,15 @@ namespace NovaWallet.Api.Workers
 
             _metrics.RecordDepositSettlement(outcomeLabel);
             _metrics.RecordDepositSettlementDuration(outcomeLabel, Stopwatch.GetElapsedTime(startTimestamp));
+
+            // Same label the settlement metrics use, so a trace and its counter line up. Business
+            // rejections are terminal-but-expected, so only genuine failures flag the span as Error.
+            activity?.SetTag("deposit.outcome", outcomeLabel);
+
+            if (outcomeLabel.StartsWith("rejected_", StringComparison.Ordinal))
+            {
+                activity?.SetStatus(ActivityStatusCode.Error, outcomeLabel);
+            }
 
             if (outcome == SettlementOutcome.TransientFailure)
             {
@@ -417,6 +469,15 @@ namespace NovaWallet.Api.Workers
                     }
 
                     var exhausted = outbox.RecordFailedAttempt();
+
+                    // Ambient activity here is the caller's deposit.settle span (this runs inside
+                    // ProcessOutboxEntryAsync), so the retry bookkeeping is recorded on it as an
+                    // event rather than a separate span.
+                    Activity.Current?.AddEvent(new ActivityEvent("retry_recorded", tags: new ActivityTagsCollection
+                    {
+                        { "deposit.retry_count", outbox.NumberOfRetries }
+                    }));
+                    Activity.Current?.SetTag("deposit.retries_exhausted", exhausted);
 
                     if (exhausted)
                     {
