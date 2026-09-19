@@ -3,6 +3,7 @@ using NovaWallet.Api.Core.Dto.Login;
 using NovaWallet.Api.Core.Models.Response;
 using NovaWallet.Api.Core.Services;
 using NovaWallet.Api.Infrastructure.Http;
+using static NovaWallet.Api.Core.Configuration.NovaWalletConstants;
 
 namespace NovaWallet.Api.Features.Wallets
 {
@@ -18,16 +19,19 @@ namespace NovaWallet.Api.Features.Wallets
             walletApi
                 .MapPost("/", CreateWallet)
                 .WithName("CreateWallet")
+                .RequireRateLimiting(RateLimitingConstants.UserPolicy)
                 .Produces<ServiceApiResponse<CreateWalletResponse>>();
 
             walletApi
                 .MapGet("/", RetrieveWalletDetails)
                 .WithName("RetrieveWalletDetails")
+                .RequireRateLimiting(RateLimitingConstants.UserPolicy)
                 .Produces<ServiceApiResponse<CreateWalletResponse>>();
 
             walletApi
                 .MapGet("/statement", GetWalletStatement)
                 .WithName("GetWalletStatement")
+                .RequireRateLimiting(RateLimitingConstants.UserPolicy)
                 .Produces<ServiceApiResponse<PagedResponse<AccountEntryResponse>>>();
 
             return group;

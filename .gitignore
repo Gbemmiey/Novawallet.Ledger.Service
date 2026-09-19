@@ -428,3 +428,9 @@ FodyWeavers.xsd
 *.msm
 *.msp
 /.idea/.idea.Novawallet.Ledger.Service/.idea
+/loadtest/
+
+# JMeter outputs when run from the repo root
+/*.jtl
+/jmeter.log
+/*-report*/

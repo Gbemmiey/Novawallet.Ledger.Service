@@ -20,8 +20,8 @@ namespace NovaWallet.Api.Infrastructure.Extensions.OpenTelemetry
     ///
     /// <para>
     /// <b>Tagging discipline:</b> every tag value used below is drawn from a small, fixed,
-    /// already-existing vocabulary - HTTP-status-shaped <c>ResponseCode</c> strings (e.g. "200",
-    /// "422"), a handful of named outcome strings, or a request path - never anything
+    /// already-existing vocabulary - NIP-style <c>ResponseCode</c> strings (e.g. "00",
+    /// "51"), a handful of named outcome strings, or a request path - never anything
     /// caller-supplied (wallet IDs, narrations, session IDs), to avoid unbounded cardinality in
     /// the metrics backend. <c>ResponseMessage</c> is deliberately never used as a tag for this
     /// same reason - it sometimes interpolates dynamic content.

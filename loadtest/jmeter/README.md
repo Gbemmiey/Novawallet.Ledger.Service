@@ -1,51 +1,56 @@
-# NovaWallet JMeter plans
+# NovaWallet JMeter plan
 
-Five separate plans for JMeter 5.6.x. Targets default to `http://localhost:5000` (the `api` container's `API_HTTP_PORT`).
+One plan for JMeter 5.6.x: `overdraw/wallet-transfer-overdraw.jmx`. It targets `http://localhost:5000` by default (the `api` container's `API_HTTP_PORT`). It uses no Groovy/JSR223, so it runs on any JDK (JMeter's bundled Groovy 4 fails on very new JDKs with `Unsupported class file major version`).
 
-## Plans
+Auth is the API's mock login (`POST /api/v1/auth/login` with a random `userId` and `role: Customer`), so no credentials are stored in the plan.
 
-The `.jmx` files in this folder are ready to import. `loadtest/_gen_jmx.py` (standard library only) is the optional generator they were modelled on. Running `python loadtest/_gen_jmx.py` from the repo root overwrites them with the generator's output.
+## Overdraw plan (concurrent debits against one balance)
 
-| Plan | What it does |
-|---|---|
-| `wallet-creation.jmx` | Each iteration: mock login as a brand-new user, then `POST /api/v1/wallets`. |
-| `wallet-statement.jmx` | Per thread: login, create and fund a wallet once, then loop `GET /api/v1/wallets/statement` (plain, and with `fromDate`/`toDate`). |
-| `wallet-credit.jmx` | Anonymous `POST /api/v1/wallets/credit` with unique `sessionId` (<= 30 chars) and `transactionReference`, plus a W3C `traceparent` header. `-Jreplay=true` re-sends the same session to exercise idempotency. |
-| `wallet-transfer.jmx` | Per thread: create a funded sender A and receiver B once, then `POST /api/v1/wallets/transfer` A -> B with a fresh `Idempotency-Key`. |
-| `wallet-concurrent-multiwallet.jmx` | A setUp group creates and funds N wallets; concurrent users then run a weighted credit / statement / transfer mix against random wallets. |
+Checks that the guarded `UPDATE` never lets concurrent debits overdraw a wallet. Defaults reproduce the scenario "50 concurrent N500 debits vs a N10,000 balance": exactly **20** transfers succeed, **30** are rejected with `422 Insufficient balance`, the sender ends at **0** and the receiver at **1,000,000** kobo.
 
-Auth is the API's mock login (`POST /api/v1/auth/login` with a random `userId` and `role: Customer`), so no credentials are stored in the plans.
+Run from inside the overdraw folder so the `.jtl`, the HTML report and `jmeter.log` all land there (JMeter resolves `-l`, `-o` and `jmeter.log` relative to the current directory). The `-o` folder must not exist or must be empty, so use a timestamped name:
 
-## Run (non-GUI)
-
+```powershell
+cd loadtest/jmeter/overdraw
+$ts = Get-Date -Format yyyyMMdd-HHmmss
+jmeter -n -t wallet-transfer-overdraw.jmx `
+  -Jjmeter.save.saveservice.response_data.on_error=true `
+  -Jjmeter.save.saveservice.responseHeaders=true `
+  -l "overdraw-$ts.jtl" -e -o "overdraw-report-$ts"
 ```
-jmeter -n -t loadtest/jmeter/wallet-credit.jmx -l results/credit.jtl -e -o results/credit-report
-jmeter -n -t loadtest/jmeter/wallet-concurrent-multiwallet.jmx -Jwallets=20 -Jthreads=50 -Jloops=20 -l results/concurrent.jtl
-```
+
+Smoke test (same folder): add `-Jrequests=5 -Jamount_kobo=300000 -Jsettle_wait_ms=3000` (balance 1,000,000 => 3 succeed, 2 rejected, sender ends at 100,000).
 
 Import into the GUI with File -> Open.
 
-## Properties (all optional, pass as `-Jname=value`)
-
-| Property | Default | Used by |
+| Property | Default | Meaning |
 |---|---|---|
-| `host`, `port`, `protocol` | `localhost`, `5000`, `http` | all |
-| `threads` | 10 | all |
-| `rampup` | 30 (seconds) | all |
-| `loops` | 5 | all except the setUp group |
-| `think_ms` | 0 | all (constant timer) |
-| `credit_kobo` | 100000000 | funding credit in setup |
-| `settle_wait_ms` | 10000 | pause after funding so the deposit consumer settles the credit |
-| `amount_kobo` | 1000 | credit and concurrent plans |
-| `transfer_kobo` | 100 | transfer and concurrent plans |
-| `replay` | false | credit plan |
-| `wallets` | 10 (min 2) | concurrent plan: wallets created in setUp |
-| `credit_pct`, `statement_pct`, `transfer_pct` | 40, 40, 20 | concurrent plan; each is an independent percentage, so an iteration may run 0-3 actions |
+| `host`, `port`, `protocol` | `localhost`, `5000`, `http` | target |
+| `requests` | 50 | concurrent transfers (threads, all released together by a Synchronizing Timer) |
+| `amount_kobo` | 50000 | amount of each transfer |
+| `balance_kobo` | 1000000 | the sender's funded balance |
+| `settle_wait_ms` | 5000 | wait per attempt for the deposit consumer to settle the funding credit |
+| `setup_attempts` | 6 | max settle polls before setUp gives up |
+| `sync_timeout_ms` | 30000 | how long the timer waits for all threads before releasing anyway |
 
-## Things to know
+Expectations are derived, not hard-coded: successes = `min(requests, floor(balance / amount))`, rejections = `requests - successes`, sender ends at `balance - successes x amount`, receiver at `successes x amount`.
 
-- **Transfer rate limit:** `POST /wallets/transfer` allows 10 requests/min per user. The transfer plan gives each thread its own sender so throughput scales with threads, and it accepts `200` or `429`. Filter the `.jtl` by response code to see how many were limited. In the concurrent plan, 200, 422 (insufficient funds) and 429 are accepted; any 5xx fails.
-- **Login rate limit:** login allows 300 requests/min. The creation plan logs in every iteration, so very high thread counts will start returning 429 and fail the status assertion. Raise `think_ms` or lower `threads` if that is not what you want to measure.
-- **Settle wait:** funding is asynchronous (outbox + `DepositConsumer`). If `PollingIntervalSeconds` is larger than `settle_wait_ms`, the first transfers return 422 because the credit has not landed. Increase `settle_wait_ms`.
-- **Tracing:** the credit plan sends `traceparent: 00-<traceId>-<spanId>-01`. Search OpenObserve for that trace id, or for `deposit.session_id`, to follow a webhook through to the wallet credit.
-- **Data growth:** every run creates new users, wallets, deposits and journal entries. Use a throwaway database.
+- **Rate limit must be above `requests`.** A 429 (or 5xx, or 401) **fails** this plan: if the limiter answered first, the balance guard would never be exercised and the result would be meaningless. docker-compose ships `RATELIMIT_TRANSFER_PERMIT_LIMIT=1000`; with the code default of 20 the run would fail on its 429s. Rebuild/restart the API after changing `.env`.
+- **Login is rate limited per client IP** (`LoginPolicy`, default 30/min; `RATELIMIT_LOGIN_PERMIT_LIMIT`). The plan logs in only a few times, but the local `.env` raises the limit to 1000 anyway.
+- **Only `Insufficient balance` counts as a guard rejection.** A 422 for another reason (e.g. the daily limit; the plan's amounts are far below it) is tallied as "other" and fails the run.
+- **Settle wait:** funding is asynchronous (outbox + `DepositConsumer`). setUp polls until the sender's balance shows the credit, up to `setup_attempts` times.
+- **Result:** tearDown emits one sample. `OVERDRAW OK ok=... rejected=... sender=... receiver=...` on success, or `OVERDRAW FAILED (401 by design) ...` with observed vs expected values in the label (a deliberately failing call, since scripting-free JMeter cannot fail a run from a computed value). If setUp cannot fund the sender it emits `SETUP FAILED (401 by design) ...` and the results are not valid.
+- Concurrent outcomes are recorded in per-thread properties (`s_{n}`), not a shared counter, which would lose updates under 50 simultaneous threads.
+- **Data growth:** each run creates two users and wallets and one deposit. Use a throwaway database.
+
+## Server-side stats alongside a run
+
+`loadtest/capture-stats.ps1` samples every 5s into a CSV (UTC timestamps, so it lines up with the `.jtl`):
+
+```
+./loadtest/capture-stats.ps1 -OutFile results/stats-overdraw.csv     # Ctrl+C when the JMeter run ends
+```
+
+Columns: API and Postgres container CPU% / memory (`docker stats`), Postgres connections (total / active / idle-in-transaction), sessions waiting on a lock, ungranted locks, and cumulative deadlocks and rollbacks (`pg_stat_activity`, `pg_locks`, `pg_stat_database`). It assumes the container names from `docker-compose.yml` and the `novawallet` DB user/database (override with `-PgUser`, `-PgDatabase`).
+
+Npgsql connection-pool usage is not in the CSV: it is exported over OTLP (meter `Npgsql`, `db.client.connections.*`), so read it from OpenObserve for the same window.

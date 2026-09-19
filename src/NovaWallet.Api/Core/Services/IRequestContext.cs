@@ -11,7 +11,7 @@
         string? RetrieveIdempotencyKey { get; }
 
         /// <summary>
-        /// Gets or sets the authenticated partner context for the current request.
+        /// Gets the authenticated user's ID (JWT <c>sub</c>) for the current request, if any.
         /// </summary>
         Guid? UserId { get; }
     }

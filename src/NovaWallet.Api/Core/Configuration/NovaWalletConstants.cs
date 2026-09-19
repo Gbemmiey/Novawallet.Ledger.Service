@@ -40,7 +40,10 @@ public static class NovaWalletConstants
 
     public static class RateLimitingConstants
     {
-        public const string PerPartnerPolicy = "PerPartnerPolicy";
+        public const string LoginPolicy = "LoginPolicy";
+        public const string UserPolicy = "UserPolicy";
+        public const string TransferPolicy = "TransferPolicy";
+        public const string CreditPolicy = "CreditPolicy";
         public const string InternalAdminPolicy = "InternalAdminPolicy";
 
         // Header & Anonymous Fallbacks
@@ -49,8 +52,6 @@ public static class NovaWalletConstants
 
     public static class AuthorizationPolicyConstants
     {
-        public const string PartnerOnly = "PartnerOnly";
-
         /// <summary>
         /// Requires the caller's JWT to carry a <c>role</c> claim of <c>Admin</c> (see
         /// <c>UserRole</c>/<c>MockUserAuthHelper</c>). Wired up in

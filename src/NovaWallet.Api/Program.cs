@@ -53,8 +53,27 @@ try
     builder.Services.AddEndpointsApiExplorer();
     builder.Services.AddJwtAuthenticationAndAuthorization(builder.Configuration);
 
-    // Register named rate limiting policies (InternalAdminPolicy, PerPartnerPolicy)
-    builder.Services.RegisterRateLimitingPolicies();
+    // Register named rate limiting policies (LoginPolicy, UserPolicy, TransferPolicy,
+    // CreditPolicy, InternalAdminPolicy); limits come from the "RateLimiting" config section.
+    builder.Services.RegisterRateLimitingPolicies(builder.Configuration);
+
+    // Forwarded-headers handling is OFF by default. Enable it (ForwardedHeaders:Enabled=true)
+    // ONLY when the API sits behind a trusted reverse proxy / load balancer: otherwise every
+    // client appears to share the proxy's IP (one IP-keyed bucket for all). When enabled the
+    // known proxy/network allow-lists are cleared, so a client that can reach the API directly
+    // could spoof X-Forwarded-For - never enable it on a directly exposed API.
+    var forwardedHeadersEnabled = builder.Configuration.GetValue<bool>("ForwardedHeaders:Enabled");
+    if (forwardedHeadersEnabled)
+    {
+        builder.Services.Configure<Microsoft.AspNetCore.Builder.ForwardedHeadersOptions>(options =>
+        {
+            options.ForwardedHeaders =
+                Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedFor |
+                Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedProto;
+            options.KnownNetworks.Clear();
+            options.KnownProxies.Clear();
+        });
+    }
 
     var app = builder.Build();
 
@@ -99,6 +118,12 @@ try
     // 3. HTTP Request Pipeline Order
     // =========================================================================
 
+    // Must run first so every later component (rate limiting, logging) sees the real client IP.
+    if (forwardedHeadersEnabled)
+    {
+        app.UseForwardedHeaders();
+    }
+
     // A. Outermost Exception & Observability Middlewares (Catches everything below)
     app.UseMiddleware<GlobalExceptionMiddleware>();
     app.UseObservabilityMiddleware();
@@ -121,12 +146,12 @@ try
         app.UseSwaggerUI();
     }
 
-    // D. Partner Authentication / Context Population (Populates IRequestContext.Partner)
+    // D. Authentication / Context Population (Populates IRequestContext.UserId)
 
     app.UseAuthentication();
     app.UseAuthorization();
 
-    // E. Rate Limiting (Evaluates PerPartnerPolicy using populated Partner context)
+    // E. Rate Limiting (per-user policies key on the authenticated user; login/credit key on client IP)
     app.UseRateLimiter();
 
     // =========================================================================

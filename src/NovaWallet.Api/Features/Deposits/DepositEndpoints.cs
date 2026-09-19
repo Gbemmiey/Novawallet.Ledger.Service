@@ -1,3 +1,4 @@
+using NovaWallet.Api.Core.Configuration;
 using NovaWallet.Api.Core.Dto.Login;
 using NovaWallet.Api.Core.Models.Response;
 using NovaWallet.Api.Core.Services;
@@ -23,6 +24,7 @@ namespace NovaWallet.Api.Features.Deposits
                 .WithName("SubmitDeposit")
                 .WithTags("Deposits")
                 .AllowAnonymous()
+                .RequireRateLimiting(NovaWalletConstants.RateLimitingConstants.CreditPolicy)
                 .Produces<ServiceApiResponse<NipSingleCreditResponse>>(StatusCodes.Status202Accepted)
                 .WithValidation<NipSingleCreditRequest>();
 

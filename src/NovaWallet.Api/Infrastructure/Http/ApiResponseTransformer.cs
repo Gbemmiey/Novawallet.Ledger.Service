@@ -89,7 +89,11 @@ namespace NovaWallet.Api.Infrastructure.Http
                     => StatusCodes.Status400BadRequest,
 
                 var code when code == ResponseCodes.InsufficientBalance.ResponseCode
+                          || code == ResponseCodes.DailyLimitExceeded.ResponseCode
                     => StatusCodes.Status422UnprocessableEntity,
+
+                var code when code == ResponseCodes.TooManyRequests.ResponseCode
+                    => StatusCodes.Status429TooManyRequests,
 
                 var code when code == ResponseCodes.Failed.ResponseCode
                           || code == ResponseCodes.SystemMalfunction.ResponseCode

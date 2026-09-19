@@ -62,7 +62,17 @@ Several checks sit alongside the core concurrency/idempotency machinery and are 
 * **Amount and self-transfer guards:** `AmountKobo` must be strictly positive, and `SourceWalletId` must differ from `BeneficiaryWalletId`. Enforced in application code and backstopped by a `CHECK ("AmountKobo" > 0)` constraint wherever amounts are persisted, so it isn't solely dependent on the app layer getting it right.
 * **Currency scope:** all wallets in this system are NGN-only. `Accounts.Currency` exists for future multi-currency support, but a transfer request is rejected at validation if source and destination currency codes ever differ — this is a stated scope decision, not an unhandled case.
 * **`POST /api/v1/wallets/credit` is intentionally unauthenticated** (`.AllowAnonymous()`) — it's an inbound callback from the NIP switch, not a customer-initiated action, and NIBSS-style inbound-credit callers don't carry this API's own bearer tokens. `DepositService`/`DepositConsumer` never consult caller identity; trust is placed entirely in the NIP payload (beneficiary account number, `SessionId`, external transaction reference) and its own idempotency guards (§5/§8). This overrides the app-wide `FallbackPolicy` (`RequireAuthenticatedUser()`, set in `AuthenticationExtensions`), which is standard ASP.NET Core behavior — `AllowAnonymous` metadata on an endpoint suppresses the fallback policy for that endpoint only.
-* **`POST /api/v1/wallets/transfer` is rate-limited** in addition to being ownership-scoped: `RequireRateLimiting(RateLimitingConstants.PerPartnerPolicy)`, a sliding-window limiter (10 requests/minute, partitioned by the caller's JWT `sub` claim via `HttpContext.RetrieveUserId()`) registered in `RateLimiterServiceExtensions.RegisterRateLimitingPolicies`. Partitioning by authenticated caller rather than by IP is safe here specifically because `UseAuthorization()` runs before `UseRateLimiter()` in the pipeline (`Program.cs`), so the caller is already authenticated by the time the partition key is computed.
+* **Rate limiting is per endpoint group and configurable** (`RateLimitingOptions`, config section `RateLimiting`, validated on startup; sliding window, registered in `RateLimiterServiceExtensions.RegisterRateLimitingPolicies`). Class defaults are conservative; `appsettings.json` / `docker-compose.yml` (`RATELIMIT_*` env vars) override them:
+
+  | Policy | Applied to | Partition key | Default (per 60s) |
+  |---|---|---|---|
+  | `LoginPolicy` | `POST /auth/login` | client IP only - the body/userId is never read, so inventing user IDs cannot buy a fresh bucket | 30 |
+  | `UserPolicy` | wallet create, fetch, statement | JWT `sub` | 120 |
+  | `TransferPolicy` | `POST /wallets/transfer` | JWT `sub` | 20 (compose sets 1000 so the overdraw load test can send bursts) |
+  | `CreditPolicy` | `POST /wallets/credit` (anonymous webhook) | client IP | 600; **0 = unlimited** (compose default) |
+  | `InternalAdminPolicy` | admin routes | client IP | effectively unlimited |
+
+  Behind a reverse proxy every client would share the proxy's IP, so set `ForwardedHeaders:Enabled=true` (`FORWARDED_HEADERS_ENABLED`) - **only** behind a trusted proxy, because it trusts `X-Forwarded-For` from any sender. Rejections return 429 with a `Retry-After` header. The transfer route is rate-limited in addition to being ownership-scoped. Partitioning by authenticated caller rather than by IP is safe here specifically because `UseAuthorization()` runs before `UseRateLimiter()` in the pipeline (`Program.cs`), so the caller is already authenticated by the time the partition key is computed.
 
 ### 8. Outbox Delivery Guarantee
 The `DepositConsumer` and any `TransferOutbox` publisher operate under **at-least-once delivery, exactly-once effect**: a crash or retry after the DB transaction has already committed will reprocess the same outbox row, but `ExternalCreditRequests.SessionId UNIQUE` (for deposits) and the ledger's `IdempotencyKey` uniqueness (for transfers) mean a reprocessed message cannot post a second credit/debit — it fails on the constraint and is discarded as already-handled rather than silently retried into a duplicate.
@@ -74,6 +84,25 @@ There is no `Users` table or real identity provider in this codebase — `POST /
 * **`GET /api/v1/admin/audit-logs`** *(`AdminOnly`)* — paginated, newest-first `AuditLog` rows, optionally filtered by `walletId`. Deliberately **not** ownership-scoped — an admin sees across wallets by design.
 * **`PATCH /api/v1/admin/wallets/{walletId}/status`** *(`AdminOnly`)* — admin override of a wallet's status (`{ "status": "Active" | "Frozen" | "Closed" }`). This is the previously-missing self-service recovery path for wallets `ReconciliationWorker` auto-freezes (`Wallet.Reactivate()` existed but nothing called it before this). Rules: `Closed` is terminal (no transition out, including via this endpoint); setting the same status it's already at is an idempotent no-op (no `AuditLog` spam, matching `ReconciliationWorker`'s own philosophy); any genuine transition is an atomic, guarded compare-and-swap `UPDATE` (`WHERE "Status" = <status just read>`) plus an `AuditLog` row (`Action = "AdminStatusChange"`) written in the same transaction — same philosophy as the hot balance-mutation paths in §4, so a concurrent status change (another admin call, or `ReconciliationWorker` itself) can never be silently clobbered.
 * All three routes require pagination query params clamped server-side (`pageSize` 1–100, default 20 — see `NovaWalletConstants.PaginationConstants`) and reuse the existing `PagedResponse<T>` envelope.
+
+### 10. Response Codes (NIP style)
+The body's `responseCode` uses NIBSS NIP-style codes (`Core/Models/Response/ResponseCodes.cs`, constants in `NipResponseCodes`). The HTTP status on the wire is chosen separately by `ApiResponseTransformer`, so a client reads `00` in the body alongside `200`.
+
+| Response | `responseCode` | NIP meaning | HTTP status |
+|---|---|---|---|
+| `Success` | `00` | Approved or completed | 200 / 201 / 202 |
+| `InvalidEntryDetected` | `30` | Format error | 400 |
+| `NoRecordReturned` | `25` | Unable to locate record | 404 |
+| `DuplicateRecord`, `Conflict` | `26` | Duplicate record | 409 |
+| `DuplicateTransactionReference` | `94` | Duplicate transaction | 409 |
+| `InsufficientBalance` | `51` | No sufficient funds | 422 |
+| `DailyLimitExceeded` | `61` | Transfer limit exceeded | 422 |
+| `RequestNotAllowed` | `57` | Transaction not permitted to sender | 403 |
+| `AccessDenied` | `63` | Security violation | 401 |
+| `TooManyRequests` | `65` | Exceeds withdrawal frequency (closest NIP code; NIP has no rate-limit code) | 429 |
+| `Failed`, `SystemMalfunction` | `96` | System malfunction | 500 |
+
+The `response_code` metric tag and the `deposit.outcome` span tag carry these values, so dashboards filtering on the old HTTP-shaped values (`"200"`, `"422"`) must switch to `"00"`, `"51"` and so on.
 
 ---
 
