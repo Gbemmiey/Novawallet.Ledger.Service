@@ -425,6 +425,59 @@ rejections (`rejected_*`) are also flagged Error. To find a credit in OpenObserv
 so ids are fine here; account numbers are still never attached. Rows written before `TraceParent`
 existed (or with no ambient activity) simply start a new trace at `deposit.settle`.
 
+### Operational Verification Queries
+
+Run these in `psql` against the `novawallet` database, for example:
+
+```bash
+docker compose exec postgres psql -U novawallet -d novawallet
+```
+
+(Use the `POSTGRES_USER` / `POSTGRES_DB` values from your `.env` if you changed them.)
+
+**1. Outbox backlog.** Unprocessed deposits. The count should reach 0 once `DepositConsumer` catches up.
+
+```sql
+-- Backlog: should reach 0
+SELECT count(*) FROM "DepositOutbox" WHERE "DateProcessed" IS NULL;
+```
+
+**2. Trace propagation.** `TraceParent` should be non-null on newly processed rows. Rows written before the
+fix may still be null, which is why the query looks only at the last 30 minutes.
+
+```sql
+-- Trace propagation fix: should be non-null on new rows
+SELECT count(*) FILTER (WHERE "TraceParent" IS NULL) AS nulls, count(*) AS total
+FROM "DepositOutbox" WHERE "DateProcessed" > now() - interval '30 minutes';
+```
+
+**3. Wallet balance vs ledger.** Returns any wallet whose stored balance differs from the sum of its ledger
+entries. Zero rows is healthy; this is the same invariant `ReconciliationWorker` checks.
+
+```sql
+-- Wallet balance vs ledger, expect zero rows
+SELECT
+    w."Id",
+    w."AvailableBalanceKobo",
+    COALESCE(SUM(
+        CASE a."EntryType"
+            WHEN 'Credit' THEN  a."AmountKobo"
+            WHEN 'Debit'  THEN -a."AmountKobo"
+        END
+    ), 0)::BIGINT AS "LedgerBalanceKobo"
+FROM "Wallets" w
+LEFT JOIN "AccountEntries" a ON a."AccountId" = w."AccountId"
+GROUP BY w."Id", w."AvailableBalanceKobo"
+HAVING w."AvailableBalanceKobo" <> COALESCE(SUM(
+        CASE a."EntryType"
+            WHEN 'Credit' THEN  a."AmountKobo"
+            WHEN 'Debit'  THEN -a."AmountKobo"
+        END
+    ), 0);
+```
+
+`AccountEntries.EntryType` is stored as a string (`'Credit'` / `'Debit'`), which is what the balance query relies on.
+
 ---
 
 ## Getting Started
