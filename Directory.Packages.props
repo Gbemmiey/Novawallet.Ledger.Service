@@ -120,6 +120,11 @@
     <PackageVersion Include="MSTest.Analyzers" Version="4.0.0" />
     <PackageVersion Include="MSTest.TestAdapter" Version="3.10.3" />
     <PackageVersion Include="MSTest.TestFramework" Version="3.10.3" />
+    <!-- xUnit test projects (tests/NovaWallet.Api.UnitTests, tests/NovaWallet.Api.IntegrationTests) -->
+    <PackageVersion Include="Microsoft.AspNetCore.Mvc.Testing" Version="8.0.19" />
+    <PackageVersion Include="Testcontainers.PostgreSql" Version="4.6.0" />
+    <PackageVersion Include="xunit" Version="2.9.3" />
+    <PackageVersion Include="xunit.runner.visualstudio" Version="2.8.2" />
     <!-- Tooling -->
     <PackageVersion Include="Microsoft.VisualStudio.Azure.Containers.Tools.Targets" Version="1.23.0" />
     <PackageVersion Include="UUIDNext" Version="4.2.4" />
