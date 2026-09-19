@@ -173,7 +173,7 @@ The `response_code` metric tag and the `deposit.outcome` span tag carry these va
                                   [ DB COMMIT ]
                                          │
                                          ▼
-                            [ Transfer Outbox Worker ] ──► [ RabbitMQ / OTel ]
+                            [ Transfer Outbox Worker ] ──► [ OTel ]
 
 ```
 
@@ -358,7 +358,6 @@ CREATE INDEX "IX_LedgerSnapshot_IsBalanced_Partial"
 * **Framework:** .NET 9 Web API (C# 13)
 * **Primary Database:** PostgreSQL 16
 * **Cache & Idempotency:** Redis 8, password-protected (`--requirepass`, no anonymous access even in local dev)
-* **Message Broker:** RabbitMQ 3.13 — part of the default `docker compose up --build` stack by explicit stakeholder request; **not yet wired into any running code path** (no `ConnectionFactory`/publisher/consumer exists today, only OTel trace-context helper classes reference RabbitMQ types for future use). It runs, but nothing talks to it yet.
 * **Observability:** OpenTelemetry Collector (forwarding to a local OpenObserve instance, UI at `http://localhost:5080`) + Prometheus — the app exports OTLP traces/metrics directly and Prometheus scrapes `/metrics` on the API itself regardless of whether a collector is present (the OTLP exporter is non-blocking/async on connection failure). The Collector's endpoint (`ObservabilityOptions__ExporterUri`) is fully config/env-driven via `OBSERVABILITY_EXPORTER_URI`. OpenObserve needs no third-party account — it's a local container, part of the default stack alongside the Collector, even though no running code path consumes either yet.
 * **Error Format:** RFC 7807 Problem Details
 
@@ -437,13 +436,13 @@ existed (or with no ambient activity) simply start a new trace at `deposit.settl
 
 ### Running via Docker Compose
 
-Copy `.env.example` to `.env` (a working `.env` with dev-only placeholder values already ships in this repo, so this step is optional) and start the **entire** stack — PostgreSQL, Redis, RabbitMQ, a one-shot database migration step, the API, the OpenTelemetry Collector, and its local OpenObserve sink — with a single, unconditional command (no Compose profile to remember):
+Copy `.env.example` to `.env` (a working `.env` with dev-only placeholder values already ships in this repo, so this step is optional) and start the **entire** stack — PostgreSQL, Redis, a one-shot database migration step, the API, the OpenTelemetry Collector, and its local OpenObserve sink — with a single, unconditional command (no Compose profile to remember):
 
 ```bash
 docker compose up --build
 ```
 
-The Collector forwards traces/metrics/logs to OpenObserve (`ops/otel-collector-config.yaml`), running locally in the same Compose network — no third-party account needed. Once up, open `http://localhost:5080` and log in with `ZO_ROOT_USER_EMAIL` / `ZO_ROOT_USER_PASSWORD` from `.env` (dev-only placeholders ship by default, no setup required) — traces, metrics, and logs land under the `default` org/stream. As noted above, RabbitMQ and the Collector/OpenObserve run unconditionally but aren't consumed by any code path yet — they start regardless.
+The Collector forwards traces/metrics/logs to OpenObserve (`ops/otel-collector-config.yaml`), running locally in the same Compose network — no third-party account needed. Once up, open `http://localhost:5080` and log in with `ZO_ROOT_USER_EMAIL` / `ZO_ROOT_USER_PASSWORD` from `.env` (dev-only placeholders ship by default, no setup required) — traces, metrics, and logs land under the `default` org/stream. As noted above, the Collector/OpenObserve run unconditionally but aren't consumed by any code path yet — they start regardless.
 
 ### Database Migrations
 
@@ -461,7 +460,7 @@ Once started:
 * **Prometheus Metrics:** `http://localhost:5000/metrics`
 
 > **Port conflicts:** every published host port (`POSTGRES_PORT`, `REDIS_PORT`,
-> `RABBITMQ_PORT`/`RABBITMQ_MANAGEMENT_PORT`, `API_HTTP_PORT`, `OPENOBSERVE_HTTP_PORT`,
+> `API_HTTP_PORT`, `OPENOBSERVE_HTTP_PORT`,
 > `OTEL_COLLECTOR_GRPC_PORT`/`OTEL_COLLECTOR_HTTP_PORT`) is overridable via `.env`. Only the
 > host-side number is configurable — the container-side port is fixed and unaffected, since
 > inter-container traffic addresses other services by Compose service name (e.g. `postgres:5432`,
@@ -476,16 +475,9 @@ Once started:
 >   letter, one uppercase letter, one digit, and one special character.`) rather than falling back
 >   to anything. If you change the password, keep it meeting that rule, and regenerate
 >   `OPENOBSERVE_AUTH_HEADER` per the comment above it in `.env`/`.env.example`.
-> * **RabbitMQ can fail its very first boot with `Error when reading
->   /var/lib/rabbitmq/.erlang.cookie: eacces`.** This is a known Docker-Desktop-on-Windows
->   filesystem-visibility race, not a real permissions problem — more likely the more containers
->   Compose creates/starts at once (i.e. exactly what the full unconditional stack does). The
->   `rabbitmq` service now has both a named volume (`novawallet-rabbitmq-data`, instead of relying
->   on the container's own writable layer) and `restart: on-failure:5`, so a transient hit here
->   self-heals within a few seconds without failing the whole `docker compose up`.
 
 > **Memory caps:** every service in `docker-compose.yml` carries a `deploy.resources` block
-> (`postgres`/`rabbitmq` 512M, `api` 768M, `openobserve` 1024M, `redis`/`migrator`/`otel-collector`
+> (`postgres` 512M, `api` 768M, `openobserve` 1024M, `redis`/`migrator`/`otel-collector`
 > 256M, all with a proportionate `reservations` floor) — this is Compose V2, so `docker compose up`
 > applies these directly, no Swarm mode needed. `redis` additionally sets its own `--maxmemory 200mb
 > --maxmemory-policy allkeys-lru` below the cgroup cap, so it evicts idempotency-cache keys under

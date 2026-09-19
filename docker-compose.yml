@@ -1,7 +1,7 @@
 # NovaWallet.Ledger.Service — local development stack.
 #
 # `docker compose up --build` brings up the ENTIRE stack unconditionally —
-# Postgres, Redis, RabbitMQ, a one-shot `migrator` step, the API, the
+# Postgres, Redis, a one-shot `migrator` step, the API, the
 # OpenTelemetry Collector, and its local OpenObserve sink. There is no profile
 # gate anymore: every long-running service below always starts on the plain
 # command, per explicit instruction. (An earlier revision gated the
@@ -16,14 +16,7 @@
 # `condition: service_completed_successfully`, and `api` itself now runs as
 # Production — a real choice, not a migration side-effect.
 #
-# RabbitMQ is NOT wired into any running code path yet (no
-# ConnectionFactory/publisher/consumer exists for it in the codebase today —
-# only OTel trace-context helper classes reference RabbitMQ types, for future
-# use). It's included anyway per explicit instruction, not because the app
-# currently needs it — see AI_USAGE.md's Prompt 2 addendum for how this
-# decision evolved from "profile-gated" to "default".
-#
-# Likewise, the OpenTelemetry Collector + OpenObserve are provisioned and
+# The OpenTelemetry Collector + OpenObserve are provisioned and
 # always started, but nothing forces the app to depend on them: the OTLP
 # exporter is async/non-blocking on connection failure (logs a warning,
 # doesn't crash startup), so `api`'s ObservabilityOptions__ExporterUri is
@@ -103,39 +96,6 @@ services:
           memory: 256M
         reservations:
           memory: 128M
-
-  rabbitmq:
-    image: rabbitmq:3.13-management
-    container_name: novawallet-rabbitmq
-    environment:
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-novawallet}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
-    # Named volume (rather than the container's own writable layer) plus a
-    # bounded restart policy work around a known Docker-Desktop-on-Windows
-    # race: on a fresh container, RabbitMQ's entrypoint can fail its very
-    # first boot with `Error when reading /var/lib/rabbitmq/.erlang.cookie:
-    # eacces` when many containers are created/started simultaneously (as
-    # `docker compose up` does for this whole stack) - a filesystem
-    # visibility lag between the entrypoint writing+chmod'ing the cookie and
-    # RabbitMQ reading it back, not a real permissions problem. It does not
-    # reproduce on a stable volume/retry.
-    volumes:
-      - novawallet-rabbitmq-data:/var/lib/rabbitmq
-    restart: on-failure:5
-    ports:
-      - "${RABBITMQ_PORT:-5672}:5672"
-      - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
-    healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-    deploy:
-      resources:
-        limits:
-          memory: 512M
-        reservations:
-          memory: 256M
 
   # One-shot migration runner (Option B of the "better way to handle migrations"
   # redesign): builds the same image as `api` but invokes it with `--migrate-only`
@@ -273,4 +233,3 @@ services:
 volumes:
   novawallet-postgres-data:
   novawallet-openobserve-data:
-  novawallet-rabbitmq-data:
