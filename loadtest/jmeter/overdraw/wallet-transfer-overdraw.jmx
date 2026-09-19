@@ -2,7 +2,7 @@
 <jmeterTestPlan version="1.2" properties="5.0" jmeter="5.6.3">
   <hashTree>
     <TestPlan guiclass="TestPlanGui" testclass="TestPlan" testname="NovaWallet - Transfer Overdraw (concurrent debits vs one balance)">
-      <stringProp name="TestPlan.comments">Proves the guarded-UPDATE debit under contention. Defaults: 50 concurrent transfers of 50,000 kobo (N500) against a 1,000,000 kobo (N10,000) balance =&gt; exactly 20 succeed (200), 30 are rejected with 422 &apos;Insufficient balance&apos;, final sender balance 0, receiver balance 1,000,000. Override with -Jrequests -Jamount_kobo -Jbalance_kobo; expectations are derived (floor(balance/amount) successes), nothing is hard-coded to 50/20. setUp creates a sender and a receiver, funds the sender through /credit and polls until the deposit consumer has settled it (-Jsettle_wait_ms per attempt, -Jsetup_attempts). All requests are released together by a Synchronizing Timer. A 429 (rate limit) or any 5xx FAILS the plan: the transfer limit must be raised above -Jrequests (RATELIMIT_TRANSFER_PERMIT_LIMIT, default 1000 in docker-compose) or the test would pass for the wrong reason. tearDown counts outcomes from per-thread properties s_{n} and re-reads both balances; a wrong result shows up as the sample &apos;OVERDRAW FAILED (401 by design) ...&apos;, success as &apos;OVERDRAW OK ...&apos;. No scripting (Groovy/JSR223), so it runs on any JDK.</stringProp>
+      <stringProp name="TestPlan.comments">Proves the guarded-UPDATE debit under contention. Defaults: 50 concurrent transfers of 50,000 kobo (N500) against a 1,000,000 kobo (N10,000) balance =&gt; exactly 20 succeed (200), 30 are rejected with 422 &apos;Insufficient balance&apos;, final sender balance 0, receiver balance 1,000,000. Override with -Jrequests -Jamount_kobo -Jbalance_kobo; expectations are derived (floor(balance/amount) successes), nothing is hard-coded to 50/20. Order: setUp logs in both users, creates the sender and receiver wallets, funds the sender through /credit, polls until the deposit consumer has settled it (-Jsettle_wait_ms per attempt, -Jsetup_attempts), then reads BOTH balances once as a pre-flight (sender must equal balance_kobo, receiver must equal 0; otherwise the SETUP FAILED sample fires). Then the burst runs: transfers only, no balance or statement calls between requests. The final balance check runs in tearDown after every request has finished. All requests are released together by a Synchronizing Timer. A 429 (rate limit) or any 5xx FAILS the plan: the transfer limit must be raised above -Jrequests (RATELIMIT_TRANSFER_PERMIT_LIMIT, default 1000 in docker-compose) or the test would pass for the wrong reason. tearDown counts outcomes from per-thread properties s_{n} and re-reads both balances; a wrong result shows up as the sample &apos;OVERDRAW FAILED (401 by design) ...&apos;, success as &apos;OVERDRAW OK ...&apos;. (The deliberate 401 on the FAILED samples is an unauthenticated GET that only marks the run as failed; it is unrelated to the transfer 422.) No scripting (Groovy/JSR223), so it runs on any JDK.</stringProp>
       <elementProp name="TestPlan.user_defined_variables" elementType="Arguments" guiclass="ArgumentsPanel" testclass="Arguments" testname="User Defined Variables">
         <collectionProp name="Arguments.arguments">
           <elementProp name="HOST" elementType="Argument">
@@ -242,11 +242,15 @@
               <collectionProp name="UserParameters.names">
                 <stringProp name="n0">bal</stringProp>
                 <stringProp name="n1">attempt</stringProp>
+                <stringProp name="n2">sbal_before</stringProp>
+                <stringProp name="n3">rbal_before</stringProp>
               </collectionProp>
               <collectionProp name="UserParameters.thread_values">
                 <collectionProp name="5135174">
                   <stringProp name="v0">0</stringProp>
                   <stringProp name="v1">0</stringProp>
+                  <stringProp name="v2">-1</stringProp>
+                  <stringProp name="v3">-1</stringProp>
                 </collectionProp>
               </collectionProp>
               <boolProp name="UserParameters.per_iteration">false</boolProp>
@@ -355,6 +359,88 @@
                 <hashTree/>
               </hashTree>
             </hashTree>
+            <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="GET /wallets (pre-flight: sender balance)" enabled="true">
+              <stringProp name="HTTPSampler.domain">${HOST}</stringProp>
+              <stringProp name="HTTPSampler.port">${PORT}</stringProp>
+              <stringProp name="HTTPSampler.protocol">${PROTOCOL}</stringProp>
+              <stringProp name="HTTPSampler.path">/api/v1/wallets</stringProp>
+              <boolProp name="HTTPSampler.follow_redirects">true</boolProp>
+              <stringProp name="HTTPSampler.method">GET</stringProp>
+              <boolProp name="HTTPSampler.use_keepalive">true</boolProp>
+              <boolProp name="HTTPSampler.postBodyRaw">false</boolProp>
+              <elementProp name="HTTPsampler.Arguments" elementType="Arguments" guiclass="HTTPArgumentsPanel" testclass="Arguments" testname="User Defined Variables">
+                <collectionProp name="Arguments.arguments"/>
+              </elementProp>
+            </HTTPSamplerProxy>
+            <hashTree>
+              <HeaderManager guiclass="HeaderPanel" testclass="HeaderManager" testname="Authorization: Bearer (sender)" enabled="true">
+                <collectionProp name="HeaderManager.headers">
+                  <elementProp name="" elementType="Header">
+                    <stringProp name="Header.name">Authorization</stringProp>
+                    <stringProp name="Header.value">Bearer ${stoken}</stringProp>
+                  </elementProp>
+                </collectionProp>
+              </HeaderManager>
+              <hashTree/>
+              <ResponseAssertion guiclass="AssertionGui" testclass="ResponseAssertion" testname="Status is 200" enabled="true">
+                <collectionProp name="Asserion.test_strings">
+                  <stringProp name="49586">200</stringProp>
+                </collectionProp>
+                <stringProp name="Assertion.custom_message"></stringProp>
+                <stringProp name="Assertion.test_field">Assertion.response_code</stringProp>
+                <boolProp name="Assertion.assume_success">false</boolProp>
+                <intProp name="Assertion.test_type">8</intProp>
+              </ResponseAssertion>
+              <hashTree/>
+              <JSONPostProcessor guiclass="JSONPostProcessorGui" testclass="JSONPostProcessor" testname="Extract sender availableBalanceKobo (sbal_before)" enabled="true">
+                <stringProp name="JSONPostProcessor.referenceNames">sbal_before</stringProp>
+                <stringProp name="JSONPostProcessor.jsonPathExprs">$.data.availableBalanceKobo</stringProp>
+                <stringProp name="JSONPostProcessor.match_numbers">1</stringProp>
+                <stringProp name="JSONPostProcessor.defaultValues">-1</stringProp>
+              </JSONPostProcessor>
+              <hashTree/>
+            </hashTree>
+            <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="GET /wallets (pre-flight: receiver balance)" enabled="true">
+              <stringProp name="HTTPSampler.domain">${HOST}</stringProp>
+              <stringProp name="HTTPSampler.port">${PORT}</stringProp>
+              <stringProp name="HTTPSampler.protocol">${PROTOCOL}</stringProp>
+              <stringProp name="HTTPSampler.path">/api/v1/wallets</stringProp>
+              <boolProp name="HTTPSampler.follow_redirects">true</boolProp>
+              <stringProp name="HTTPSampler.method">GET</stringProp>
+              <boolProp name="HTTPSampler.use_keepalive">true</boolProp>
+              <boolProp name="HTTPSampler.postBodyRaw">false</boolProp>
+              <elementProp name="HTTPsampler.Arguments" elementType="Arguments" guiclass="HTTPArgumentsPanel" testclass="Arguments" testname="User Defined Variables">
+                <collectionProp name="Arguments.arguments"/>
+              </elementProp>
+            </HTTPSamplerProxy>
+            <hashTree>
+              <HeaderManager guiclass="HeaderPanel" testclass="HeaderManager" testname="Authorization: Bearer (receiver)" enabled="true">
+                <collectionProp name="HeaderManager.headers">
+                  <elementProp name="" elementType="Header">
+                    <stringProp name="Header.name">Authorization</stringProp>
+                    <stringProp name="Header.value">Bearer ${rtoken}</stringProp>
+                  </elementProp>
+                </collectionProp>
+              </HeaderManager>
+              <hashTree/>
+              <ResponseAssertion guiclass="AssertionGui" testclass="ResponseAssertion" testname="Status is 200" enabled="true">
+                <collectionProp name="Asserion.test_strings">
+                  <stringProp name="49586">200</stringProp>
+                </collectionProp>
+                <stringProp name="Assertion.custom_message"></stringProp>
+                <stringProp name="Assertion.test_field">Assertion.response_code</stringProp>
+                <boolProp name="Assertion.assume_success">false</boolProp>
+                <intProp name="Assertion.test_type">8</intProp>
+              </ResponseAssertion>
+              <hashTree/>
+              <JSONPostProcessor guiclass="JSONPostProcessorGui" testclass="JSONPostProcessor" testname="Extract receiver availableBalanceKobo (rbal_before)" enabled="true">
+                <stringProp name="JSONPostProcessor.referenceNames">rbal_before</stringProp>
+                <stringProp name="JSONPostProcessor.jsonPathExprs">$.data.availableBalanceKobo</stringProp>
+                <stringProp name="JSONPostProcessor.match_numbers">1</stringProp>
+                <stringProp name="JSONPostProcessor.defaultValues">-1</stringProp>
+              </JSONPostProcessor>
+              <hashTree/>
+            </hashTree>
           </hashTree>
           <TestAction guiclass="TestActionGui" testclass="TestAction" testname="Publish sender/receiver to properties and reset counters" enabled="true">
             <intProp name="ActionProcessor.action">1</intProp>
@@ -387,13 +473,13 @@
             </UserParameters>
             <hashTree/>
           </hashTree>
-          <IfController guiclass="IfControllerPanel" testclass="IfController" testname="Sender was NOT funded to balance_kobo" enabled="true">
-            <stringProp name="IfController.condition">${__jexl3(${bal} != ${BALANCE_KOBO})}</stringProp>
+          <IfController guiclass="IfControllerPanel" testclass="IfController" testname="Pre-flight failed: sender != balance_kobo or receiver != 0" enabled="true">
+            <stringProp name="IfController.condition">${__jexl3(${sbal_before} != ${BALANCE_KOBO} || ${rbal_before} != 0)}</stringProp>
             <boolProp name="IfController.evaluateAll">false</boolProp>
             <boolProp name="IfController.useExpression">true</boolProp>
           </IfController>
           <hashTree>
-            <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="SETUP FAILED (401 by design) sender balance=${bal} expected=${BALANCE_KOBO} - results below are not valid" enabled="true">
+            <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="SETUP FAILED (deliberate 401 flags the run) sender=${sbal_before} expected=${BALANCE_KOBO}, receiver=${rbal_before} expected=0 - results are not valid" enabled="true">
               <stringProp name="HTTPSampler.domain">${HOST}</stringProp>
               <stringProp name="HTTPSampler.port">${PORT}</stringProp>
               <stringProp name="HTTPSampler.protocol">${PROTOCOL}</stringProp>
@@ -753,7 +839,7 @@
           <boolProp name="IfController.useExpression">true</boolProp>
         </IfController>
         <hashTree>
-          <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="OVERDRAW FAILED (401 by design) ok=${__P(ok_total,0)} (expected ${exp_ok}) rejected=${__P(rej_total,0)} (expected ${exp_rej}) other=${__P(other_total,0)} (expected 0) sender=${sbal} (expected ${exp_sender}) receiver=${rbal} (expected ${exp_receiver})" enabled="true">
+          <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="OVERDRAW FAILED (deliberate 401 flags the run) ok=${__P(ok_total,0)} (expected ${exp_ok}) rejected=${__P(rej_total,0)} (expected ${exp_rej}) other=${__P(other_total,0)} (expected 0) sender=${sbal} (expected ${exp_sender}) receiver=${rbal} (expected ${exp_receiver})" enabled="true">
             <stringProp name="HTTPSampler.domain">${HOST}</stringProp>
             <stringProp name="HTTPSampler.port">${PORT}</stringProp>
             <stringProp name="HTTPSampler.protocol">${PROTOCOL}</stringProp>

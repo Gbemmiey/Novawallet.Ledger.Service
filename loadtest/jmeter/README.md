@@ -8,6 +8,8 @@ Auth is the API's mock login (`POST /api/v1/auth/login` with a random `userId` a
 
 Checks that the guarded `UPDATE` never lets concurrent debits overdraw a wallet. Defaults reproduce the scenario "50 concurrent N500 debits vs a N10,000 balance": exactly **20** transfers succeed, **30** are rejected with `422 Insufficient balance`, the sender ends at **0** and the receiver at **1,000,000** kobo. The 30 rejections are also stored as `WalletTransfers` rows with `Status = 'Failed'`, `FailureCode = '51'` and `FailureReason = 'Insufficient balance.'`, one per Idempotency-Key (`SELECT "FailureCode", "FailureReason", count(*) FROM "WalletTransfers" WHERE "Status" = 'Failed' GROUP BY 1, 2;`). The transfer body carries no `sourceWalletId`: the source is the wallet of the sender whose token the plan uses.
 
+**Order of steps:** (1) log in sender and receiver, (2) create both wallets, (3) fund the sender through `/credit` and poll until it settles, (4) pre-flight: read both balances once (sender must equal `balance_kobo`, receiver must equal 0, otherwise `SETUP FAILED` is emitted), (5) the burst: transfers only, released together, with no balance or statement calls in between, (6) final check in tearDown: tally the outcomes and read both balances.
+
 Run from inside the overdraw folder so the `.jtl`, the HTML report and `jmeter.log` all land there (JMeter resolves `-l`, `-o` and `jmeter.log` relative to the current directory). The `-o` folder must not exist or must be empty, so use a timestamped name:
 
 ```powershell
@@ -39,7 +41,7 @@ Expectations are derived, not hard-coded: successes = `min(requests, floor(balan
 - **Login is rate limited per client IP** (`LoginPolicy`, default 30/min; `RATELIMIT_LOGIN_PERMIT_LIMIT`). The plan logs in only a few times, but the local `.env` raises the limit to 1000 anyway.
 - **Only `Insufficient balance` counts as a guard rejection.** A 422 for another reason (e.g. the daily limit; the plan's amounts are far below it) is tallied as "other" and fails the run.
 - **Settle wait:** funding is asynchronous (outbox + `DepositConsumer`). setUp polls until the sender's balance shows the credit, up to `setup_attempts` times.
-- **Result:** tearDown emits one sample. `OVERDRAW OK ok=... rejected=... sender=... receiver=...` on success, or `OVERDRAW FAILED (401 by design) ...` with observed vs expected values in the label (a deliberately failing call, since scripting-free JMeter cannot fail a run from a computed value). If setUp cannot fund the sender it emits `SETUP FAILED (401 by design) ...` and the results are not valid.
+- **Result:** tearDown emits one sample. `OVERDRAW OK ok=... rejected=... sender=... receiver=...` on success, or `OVERDRAW FAILED (401 by design) ...` with observed vs expected values in the label (a deliberately failing call, since scripting-free JMeter cannot fail a run from a computed value). The "401" is an unauthenticated `GET /wallets` that only marks the run as failed; it is unrelated to the transfer `422`. If the pre-flight balance check fails (sender not funded, or receiver not 0) it emits `SETUP FAILED (deliberate 401 flags the run) ...` and the results are not valid.
 - Concurrent outcomes are recorded in per-thread properties (`s_{n}`), not a shared counter, which would lose updates under 50 simultaneous threads.
 - **Data growth:** each run creates two users and wallets and one deposit. Use a throwaway database.
 
