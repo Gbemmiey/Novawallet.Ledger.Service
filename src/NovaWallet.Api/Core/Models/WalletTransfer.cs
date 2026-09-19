@@ -74,9 +74,18 @@ namespace NovaWallet.Api.Core.Models
             RequestPayloadHash = requestPayloadHash;
             FailureCode = failureCode;
             FailureReason = failureReason;
-            TransactionDate = transactionDate;
-            DateModified = dateModified;
+            TransactionDate = TruncateToMicroseconds(transactionDate);
+            DateModified = TruncateToMicroseconds(dateModified);
         }
+
+        /// <summary>
+        /// Postgres stores timestamps at microsecond precision while <see cref="DateTime.UtcNow"/>
+        /// has 100 ns ticks. Truncating up front makes the value the caller is first shown identical
+        /// to the one read back from the table on a replay or requery - otherwise the two responses
+        /// differ in the last fractional digit and an "identical replay" is not byte-identical.
+        /// </summary>
+        private static DateTime TruncateToMicroseconds(DateTime value) =>
+            new(value.Ticks - (value.Ticks % 10), value.Kind);
 
         public static WalletTransfer Create(Guid journalEntryId, Guid sourceWalletId, Guid destinationWalletId,
             long amountKobo, string? narration, string idempotencyKey, string requestPayloadHash,

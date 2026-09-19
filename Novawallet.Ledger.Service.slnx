@@ -12,5 +12,8 @@
   <Folder Name="/src/">
     <Project Path="src/NovaWallet.Api/NovaWallet.Api.csproj" Id="30f4e7c4-922f-48c5-aeaf-2cd07d858123" />
   </Folder>
-  <Folder Name="/tests/" />
+  <Folder Name="/tests/">
+    <Project Path="tests/NovaWallet.Api.IntegrationTests/NovaWallet.Api.IntegrationTests.csproj" />
+    <Project Path="tests/NovaWallet.Api.UnitTests/NovaWallet.Api.UnitTests.csproj" />
+  </Folder>
 </Solution>

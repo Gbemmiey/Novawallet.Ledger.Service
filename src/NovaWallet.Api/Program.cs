@@ -181,3 +181,6 @@ finally
 {
     // Flush trace exporters / logging buffers on shutdown
 }
+
+// Exposes the entry point to WebApplicationFactory<Program> in tests/NovaWallet.Api.IntegrationTests.
+public partial class Program { }

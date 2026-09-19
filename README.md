@@ -433,7 +433,7 @@ existed (or with no ambient activity) simply start a new trace at `deposit.settl
 ### Prerequisites
 
 * Docker Engine 24+ & Docker Compose v2+
-* .NET 9 SDK (for local test running)
+* .NET 8 SDK or newer (the API and both test projects target `net8.0`; the `net8.0` runtime must be installed to run them)
 
 ### Running via Docker Compose
 
@@ -497,13 +497,42 @@ Once started:
 
 ## Automated Testing Suite
 
-The project includes unit tests, integration tests via Testcontainers, and a load/concurrency test asserting non-negative balances under race conditions.
+The suite is two xUnit projects under `tests/`, both listed in the solution:
 
-### Running All Tests
+| Project | Needs Docker | What it covers |
+|---|---|---|
+| `tests/NovaWallet.Api.UnitTests` | No | Validators, domain model rules (`Wallet`, `WalletTransfer`, `JournalEntry`, `DepositOutbox`, `ExternalCreditRequest`), the NIP response-code → HTTP-status mapping, request helpers, JWT generation, rate-limit option validation, and the request guards that run before any database work. |
+| `tests/NovaWallet.Api.IntegrationTests` | **Yes** | The real API (real pipeline, EF Core, migrations and background workers) on a throwaway PostgreSQL 16 started with Testcontainers. Auth and admin access, wallets and statements, the deposit flow, transfers, idempotency, concurrency, requery, rate limiting, reconciliation, and database-level constraints. |
+
+The integration tests use a real PostgreSQL rather than SQLite or the EF in-memory provider on purpose: the money-movement code depends on `INSERT ... ON CONFLICT`, `UPDATE ... RETURNING`, row locking and the `CHECK` / unique constraints, none of which those providers reproduce. The container image is `postgres:16-alpine`; Docker must be running. All migrations are applied to the test database first, so the migration chain is exercised too. The API runs as `Production`, as in `docker-compose.yml`, with Redis unset (so `HybridCache` uses memory), the deposit consumer polling every second, and rate limits raised out of the way except in the rate-limit tests.
+
+### Running the Tests
 
 ```bash
+# everything
 dotnet test --configuration Release
+
+# unit tests only - no Docker needed
+dotnet test tests/NovaWallet.Api.UnitTests
+
+# integration tests only - Docker must be running
+dotnet test tests/NovaWallet.Api.IntegrationTests
 ```
+
+Test collections run one after another (`DisableTestParallelization`): they share process-wide environment variables and the rate-limit tests depend on exact request counts.
+
+| Integration test class | Covers |
+|---|---|
+| `AuthTests` | Login, bad/expired/wrongly-signed tokens (401), admin-only routes (403 for customers), anonymous credit and health endpoints. |
+| `WalletEndpointTests` | Wallet creation (idempotent, one wallet per user), retrieval, paginated statements. |
+| `DepositFlowTests` | Anonymous `/credit` → 202, settlement by the consumer, balanced journal, replays and concurrent redeliveries credit once, duplicate transaction references (94), frozen beneficiary, `TraceParent` on outbox rows, credit requery (`09` / `00` / `96`). |
+| `TransferTests` | Happy path, source wallet inferred from the JWT, a stale `sourceWalletId` rejected with `30`, validation, daily limit (61), frozen wallets (57), which rejections are recorded as `Failed` rows and which are not. |
+| `IdempotencyTests` | Replay returns a byte-identical body and debits once; same key with a different payload is rejected (`26`); failed transfers replay their stored failure; another user's key leaks nothing; concurrent same-key requests yield one transfer. |
+| `ConcurrentTransferTests` | The 50-request overdraw test below, opposite-direction transfers (deadlock check), many receivers, transfers racing deposits. |
+| `TransferRequeryTests` | `GET /wallets/transfer/{idempotencyKey}` for completed, failed, unknown and other users' keys. |
+| `RateLimitTests` | Login (per IP), transfer (per user) and credit (per IP) limits, with `Retry-After` on the 429. |
+| `ReconciliationTests` | A discrepancy is snapshotted, freezes the wallet and is audited; healthy wallets under concurrent transfers are never flagged. |
+| `LedgerInvariantTests` | Every journal balances, every wallet equals its ledger, and the database's own `CHECK` / unique-index backstops fire. |
 
 ### Concurrency Load Test Highlight
 
@@ -513,16 +542,23 @@ dotnet test --configuration Release
 [Fact]
 public async Task Transfer_ConcurrentRequests_GuaranteesNonNegativeBalanceAndNoDoubleSpend()
 {
-    // Arrange: 50 requests of 50,000 Kobo (Total 2.5m Kobo) against 1.0m Kobo balance
-    var tasks = requests.Select(req => _client.PostAsJsonAsync("/api/v1/wallets/transfer", req));
+    // Arrange: 50 requests of 50,000 kobo (2.5m kobo in total) against a 1.0m kobo balance.
+    // The sender is whoever the JWT says - there is no sourceWalletId in the request.
+    var sender = await _fixture.CreateUserAsync(fundKobo: 1_000_000);
+    var receiver = await _fixture.CreateUserAsync();
 
-    // Act
-    await Task.WhenAll(tasks);
+    // Act: all 50 in flight at once, each under its own Idempotency-Key.
+    var responses = await Task.WhenAll(Enumerable.Range(0, 50)
+        .Select(_ => sender.Client.TransferAsync(receiver.WalletId, 50_000, Guid.NewGuid().ToString())));
 
-    // Assert
-    var finalBalance = await GetWalletBalanceAsync(_sourceWalletId);
-    Assert.True(finalBalance >= 0, "Balance drifted into negative!");
-    Assert.Equal(0, finalBalance); // Exactly 20 succeeded, 30 rejected
+    // Assert: exactly 20 succeed (200) and 30 are rejected (422, code 51) ...
+    Assert.Equal(20, responses.Count(r => r.StatusCode == HttpStatusCode.OK));
+    Assert.Equal(30, responses.Count(r => r.StatusCode == HttpStatusCode.UnprocessableEntity));
+
+    // ... the sender ends at exactly zero, the receiver holds everything that was debited,
+    // and WalletTransfers holds 20 Completed rows plus 30 Failed rows (code 51).
+    Assert.Equal(0, await _fixture.GetBalanceAsync(sender));
+    Assert.Equal(1_000_000, await _fixture.GetBalanceAsync(receiver));
 }
 ```
 
@@ -534,26 +570,31 @@ public async Task Transfer_ConcurrentRequests_GuaranteesNonNegativeBalanceAndNoD
 [Fact]
 public async Task Transfer_ReplayedIdempotencyKey_ReturnsSameResultWithoutDoubleDebit()
 {
-    var request = BuildTransferRequest(amountKobo: 50_000);
+    var sender = await _fixture.CreateUserAsync(fundKobo: 1_000_000);
+    var receiver = await _fixture.CreateUserAsync();
     var key = Guid.NewGuid().ToString();
 
-    var first = await _client.PostAsJsonAsync("/api/v1/wallets/transfer", request, IdempotencyHeader(key));
-    var second = await _client.PostAsJsonAsync("/api/v1/wallets/transfer", request, IdempotencyHeader(key));
+    var first = await sender.Client.TransferAsync(receiver.WalletId, 50_000, key);
+    var second = await sender.Client.TransferAsync(receiver.WalletId, 50_000, key);
 
+    // Byte-for-byte identical, including the transaction timestamp and payment reference.
     Assert.Equal(await first.Content.ReadAsStringAsync(), await second.Content.ReadAsStringAsync());
 
-    var finalBalance = await GetWalletBalanceAsync(_sourceWalletId);
-    Assert.Equal(_initialBalanceKobo - 50_000, finalBalance); // debited exactly once
+    Assert.Equal(1_000_000 - 50_000, await _fixture.GetBalanceAsync(sender)); // debited exactly once
 }
 
 [Fact]
-public async Task Transfer_ReusedIdempotencyKeyDifferentPayload_ReturnsConflict()
+public async Task Transfer_ReusedIdempotencyKeyWithADifferentAmount_ReturnsConflict()
 {
+    var sender = await _fixture.CreateUserAsync(fundKobo: 1_000_000);
+    var receiver = await _fixture.CreateUserAsync();
     var key = Guid.NewGuid().ToString();
-    await _client.PostAsJsonAsync("/api/v1/wallets/transfer", BuildTransferRequest(amountKobo: 50_000), IdempotencyHeader(key));
 
-    var response = await _client.PostAsJsonAsync("/api/v1/wallets/transfer", BuildTransferRequest(amountKobo: 75_000), IdempotencyHeader(key));
+    await sender.Client.TransferAsync(receiver.WalletId, 50_000, key);
+    var response = await sender.Client.TransferAsync(receiver.WalletId, 75_000, key);
 
-    Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+    Assert.Equal(HttpStatusCode.Conflict, response.StatusCode); // responseCode "26"
 }
 ```
+
+The same rules hold for a **failed** transfer: replaying its key returns the stored failure (same code and reason) without adding a second row, and reusing the key with a different payload is a conflict.
