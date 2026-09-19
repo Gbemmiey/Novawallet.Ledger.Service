@@ -187,7 +187,7 @@ The `response_code` metric tag and the `deposit.outcome` span tag carry these va
 -- Product Domain: Fast State Guard
 CREATE TABLE "Wallets" (
     "Id" UUID PRIMARY KEY,
-    "UserId" UUID NOT NULL,
+    "UserId" UUID UNIQUE NOT NULL, -- one wallet per user; concurrent creates resolve to the winner's wallet
     "Currency" VARCHAR(3) NOT NULL DEFAULT 'NGN',
     "AvailableBalanceKobo" BIGINT NOT NULL DEFAULT 0,
     "Status" INT NOT NULL DEFAULT 1, -- 1 = Active, 2 = Frozen, 3 = Closed

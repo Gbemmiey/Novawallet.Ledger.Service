@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using NovaWallet.Api.Core.Enums;
 using NovaWallet.Api.Core.Models;
 using NovaWallet.Api.IntegrationTests.Infrastructure;
 using Npgsql;
@@ -63,6 +64,29 @@ public class LedgerInvariantTests
         Assert.NotNull(postgres);
         Assert.Equal(PostgresErrorCodes.CheckViolation, postgres!.SqlState);
         Assert.Equal(1_000, await _fixture.GetBalanceAsync(user));
+    }
+
+    [Fact]
+    public async Task TheDatabase_RefusesASecondWalletForTheSameUser()
+    {
+        var user = await _fixture.CreateUserAsync();
+
+        await using var db = _fixture.CreateDbContext();
+
+        var account = Account.Create(
+            accountNumber: Random.Shared.NextInt64(1_000_000_000, 9_999_999_999).ToString(),
+            accountType: AccountType.Liability);
+        db.Accounts.Add(account);
+
+        var userId = await db.Wallets
+            .Where(w => w.Id == user.WalletId)
+            .Select(w => w.UserId)
+            .SingleAsync();
+        db.Wallets.Add(Wallet.Create(userId, account.Id));
+
+        var exception = await Assert.ThrowsAsync<DbUpdateException>(() => db.SaveChangesAsync());
+
+        Assert.Equal(PostgresErrorCodes.UniqueViolation, FindPostgresException(exception)?.SqlState);
     }
 
     [Fact]

@@ -41,6 +41,11 @@ namespace NovaWallet.Api.Infrastructure.Data.EntityConfigurations
             builder.HasIndex(w => w.AccountId)
                 .IsUnique();
 
+            // One wallet per user, enforced by Postgres so concurrent CreateWallet calls
+            // can't both win the insert race (WalletService.CreateWallet handles the loser).
+            builder.HasIndex(w => w.UserId)
+                .IsUnique();
+
             builder.HasOne(w => w.Account)
                 .WithOne()
                 .HasForeignKey<Wallet>(w => w.AccountId)

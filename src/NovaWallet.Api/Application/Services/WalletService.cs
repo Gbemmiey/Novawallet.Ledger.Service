@@ -7,6 +7,7 @@ using NovaWallet.Api.Core.Models;
 using NovaWallet.Api.Core.Models.Response;
 using NovaWallet.Api.Core.Services;
 using NovaWallet.Api.Infrastructure.Data;
+using Npgsql;
 using System.Linq.Expressions;
 using System.Security.Cryptography;
 using System.Text;
@@ -36,7 +37,10 @@ namespace NovaWallet.Api.Application.Services
                     ResponseCodes.AccessDenied);
             }
 
-            // TODO : Low - Distributed lock on UserId for Wallet creation
+            // Concurrent creates for one user are serialised by the unique index on
+            // Wallets.UserId (plus the unique Accounts.AccountNumber): the loser's insert
+            // fails with a unique violation and is resolved below by returning the
+            // winner's wallet, so no distributed lock is needed.
 
             var strategy = _novaWalletDbContext.Database.CreateExecutionStrategy();
 
@@ -97,6 +101,40 @@ namespace NovaWallet.Api.Application.Services
                 catch (OperationCanceledException)
                 {
                     throw;
+                }
+                catch (DbUpdateException ex) when (IsUniqueViolation(ex))
+                {
+                    await transaction.RollbackAsync(CancellationToken.None);
+
+                    // The failed Account/Wallet entities are still tracked; drop them so the
+                    // re-read below is clean.
+                    _novaWalletDbContext.ChangeTracker.Clear();
+
+                    // Lost a race against a concurrent request for the same user. Return the
+                    // winner's wallet, exactly as the sequential "already exists" path does.
+                    var winner = await _novaWalletDbContext.Wallets
+                        .AsNoTracking()
+                        .Where(w => w.UserId == userId.Value)
+                        .Select(WalletResponseProjection)
+                        .FirstOrDefaultAsync(CancellationToken.None);
+
+                    if (winner is not null)
+                    {
+                        _logger.LogInformation(
+                            "Concurrent wallet creation for UserId {UserId} lost the insert race. Returning WalletId {WalletId}",
+                            userId.Value,
+                            winner.WalletId);
+
+                        return ServiceApiResponse<CreateWalletResponse>.CreateSuccess(winner);
+                    }
+
+                    // The violation was on something other than the user's wallet.
+                    _logger.LogError(
+                        ex,
+                        "Unique violation creating wallet for UserId {UserId}, but no wallet exists",
+                        userId.Value);
+
+                    return ServiceApiResponse<CreateWalletResponse>.SystemMalFunctioned();
                 }
                 catch (Exception ex)
                 {
@@ -225,6 +263,11 @@ namespace NovaWallet.Api.Application.Services
                 WalletId = wallet.Id,
                 Status = wallet.Status
             };
+
+        private static bool IsUniqueViolation(DbUpdateException ex)
+        {
+            return ex.InnerException is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation };
+        }
 
         public static string GenerateAccountNumber(Guid id)
         {

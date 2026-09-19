@@ -198,7 +198,7 @@ public class WalletEndpointTests
     }
 
     [Fact]
-    public async Task CreateWallet_ConcurrentCallsForOneUser_NeverCreateMoreThanOneWallet()
+    public async Task CreateWallet_ConcurrentCallsForOneUser_AllSucceedWithTheSameWallet()
     {
         var userId = Guid.NewGuid();
         var client = await _fixture.LoginAsync(userId);
@@ -206,10 +206,16 @@ public class WalletEndpointTests
         var responses = await Task.WhenAll(
             Enumerable.Range(0, 10).Select(_ => client.PostAsync("/api/v1/wallets", null)));
 
-        // A lost race may report a system error (wallet creation has no distributed lock yet -
-        // see the TODO in WalletService.CreateWallet), but it must never produce a second wallet.
-        Assert.All(responses, r => Assert.Contains(r.StatusCode, new[] { HttpStatusCode.OK, HttpStatusCode.InternalServerError }));
-        Assert.Contains(responses, r => r.StatusCode == HttpStatusCode.OK);
+        // The unique index on Wallets.UserId makes the losers resolve to the winner's wallet.
+        Assert.All(responses, r => Assert.Equal(HttpStatusCode.OK, r.StatusCode));
+
+        var walletIds = new HashSet<string>();
+        foreach (var response in responses)
+        {
+            walletIds.Add((await response.ReadJsonAsync())["data"]!["walletId"]!.GetValue<string>());
+        }
+
+        Assert.Single(walletIds);
 
         await using var db = _fixture.CreateDbContext();
         Assert.Equal(1, await db.Wallets.CountAsync(w => w.UserId == userId));
