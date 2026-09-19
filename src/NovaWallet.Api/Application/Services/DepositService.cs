@@ -93,10 +93,17 @@ namespace NovaWallet.Api.Application.Services
                 // so genuine failures (see DepositProcessingFailedException below) always fall
                 // through to a fresh DB-backed attempt on the next delivery - the cache is a
                 // fast-path, never the source of truth.
+                // Capture the trace context HERE, while the deposit.accept activity is still
+                // ambient. HybridCache runs the factory on a work item that does not reliably
+                // flow ExecutionContext, so Activity.Current can be null inside it - which left
+                // DepositOutbox.TraceParent null. The values travel in the state tuple instead.
+                var activity = Activity.Current;
+                var traceParent = NovaWalletTracing.CurrentTraceParent();
+
                 return await _hybridCache.GetOrCreateAsync(
                     DepositIdempotencyCacheKeys.ForSessionId(nipSingleCreditRequest.SessionId),
-                    (Service: this, Request: nipSingleCreditRequest),
-                    static (state, ct) => state.Service.ProcessDepositAsync(state.Request, ct),
+                    (Service: this, Request: nipSingleCreditRequest, Activity: activity, TraceParent: traceParent),
+                    static (state, ct) => state.Service.ProcessDepositAsync(state.Request, state.Activity, state.TraceParent, ct),
                     IdempotencyCacheEntryOptions,
                     cancellationToken: cancellationToken);
             }
@@ -117,7 +124,10 @@ namespace NovaWallet.Api.Application.Services
         }
 
         private async ValueTask<ServiceApiResponse<NipSingleCreditResponse>> ProcessDepositAsync(
-            NipSingleCreditRequest nipSingleCreditRequest, CancellationToken cancellationToken)
+            NipSingleCreditRequest nipSingleCreditRequest,
+            Activity? acceptActivity,
+            string? traceParent,
+            CancellationToken cancellationToken)
         {
             // Validate the account number
             var validBeneficiaryAccount = await _novaWalletDbContext.Accounts
@@ -144,10 +154,10 @@ namespace NovaWallet.Api.Application.Services
             {
                 _logger.LogInformation("Deposit replay detected for SessionId {SessionId}. Returning original result.",
                     nipSingleCreditRequest.SessionId);
-                Activity.Current?.SetTag("deposit.replay", true);
+                acceptActivity?.SetTag("deposit.replay", true);
 
                 return ServiceApiResponse<NipSingleCreditResponse>.CreateSuccess(
-                    ToResponse(existingBySessionId, nipSingleCreditRequest.Narration));
+                    ToResponse(existingBySessionId,nipSingleCreditRequest.Narration));
             }
 
             // Genuine conflict: same TransactionReference under a different SessionId
@@ -186,7 +196,7 @@ namespace NovaWallet.Api.Application.Services
                     // to inherit context from, so it parents its settlement span on this value.
                     var depositOutbox = DepositOutbox.Create(
                         externalCreditRequest.Id,
-                        NovaWalletTracing.CurrentTraceParent());
+                        traceParent);
 
                     _novaWalletDbContext.ExternalCreditRequests.Add(externalCreditRequest);
                     _novaWalletDbContext.DepositOutboxEntries.Add(depositOutbox);
@@ -223,7 +233,7 @@ namespace NovaWallet.Api.Application.Services
                         _logger.LogInformation(
                             "Deposit replay detected after unique constraint race for SessionId {SessionId}. Returning original result.",
                             nipSingleCreditRequest.SessionId);
-                        Activity.Current?.SetTag("deposit.replay", true);
+                        acceptActivity?.SetTag("deposit.replay", true);
 
                         return ServiceApiResponse<NipSingleCreditResponse>.CreateSuccess(
                             ToResponse(raceWinner, nipSingleCreditRequest.Narration));
