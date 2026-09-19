@@ -1,0 +1,276 @@
+# NovaWallet.Ledger.Service — local development stack.
+#
+# `docker compose up --build` brings up the ENTIRE stack unconditionally —
+# Postgres, Redis, RabbitMQ, a one-shot `migrator` step, the API, the
+# OpenTelemetry Collector, and its local OpenObserve sink. There is no profile
+# gate anymore: every long-running service below always starts on the plain
+# command, per explicit instruction. (An earlier revision gated the
+# Collector/OpenObserve behind an `observability` Compose profile so they were
+# opt-in; that gate has been removed — see AI_USAGE.md's later addendum for
+# why and when.)
+#
+# Migrations no longer piggyback on ASPNETCORE_ENVIRONMENT=Development (see
+# AI_USAGE.md's later addendum for the full "better way to handle migrations"
+# redesign): the dedicated `migrator` service applies pending EF Core
+# migrations once and exits, `api` waits on it via
+# `condition: service_completed_successfully`, and `api` itself now runs as
+# Production — a real choice, not a migration side-effect.
+#
+# RabbitMQ is NOT wired into any running code path yet (no
+# ConnectionFactory/publisher/consumer exists for it in the codebase today —
+# only OTel trace-context helper classes reference RabbitMQ types, for future
+# use). It's included anyway per explicit instruction, not because the app
+# currently needs it — see AI_USAGE.md's Prompt 2 addendum for how this
+# decision evolved from "profile-gated" to "default".
+#
+# Likewise, the OpenTelemetry Collector + OpenObserve are provisioned and
+# always started, but nothing forces the app to depend on them: the OTLP
+# exporter is async/non-blocking on connection failure (logs a warning,
+# doesn't crash startup), so `api`'s ObservabilityOptions__ExporterUri is
+# simply always set below — harmless whether or not anything is actually
+# listening at that address.
+#
+#   docker compose up --build
+#
+# All secrets/config below come from `.env` (git-ignored; see `.env.example`
+# for the tracked template). Values shipped in this repo's own `.env` are
+# dev-only placeholders, safe to commit-adjacent since they're not real secrets.
+#
+# NOTE: migrations for the `WalletTransfer` and `LedgerSnapshot` tables have
+# not been hand-authored yet (see README). The `migrator` service above will
+# still run and exit 0 (there's simply nothing pending for those tables to
+# apply) — but against a fresh volume, `POST /api/v1/wallets/transfer` and the
+# ReconciliationWorker will fail once those migrations are added and until
+# they're applied. Deposits and wallet creation/reads work end-to-end today.
+#
+# Every service below carries a `deploy.resources` block capping its memory.
+# This is Compose V2 (the `docker compose` CLI plugin, not the legacy
+# `docker-compose` v1 binary), which applies `deploy.resources.limits`/
+# `reservations` directly on `docker compose up` — no Swarm mode required;
+# that's a common misconception left over from the Deploy section's Swarm
+# origins. `limits.memory` is a hard OOM-kill ceiling (enforced via the
+# container's cgroup); `reservations.memory` is a soft floor used only for
+# scheduling and carries no meaning on a single-node `docker compose up`, but
+# is set anyway as accurate documentation of each service's steady-state
+# footprint. Sizes below are deliberately generous dev-machine budgets, not
+# production tuning — pick a value that will not be a first suspect if
+# something behaves oddly, and revisit with real numbers before deploying
+# anywhere memory is actually scarce.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: novawallet-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-novawallet}
+      POSTGRES_USER: ${POSTGRES_USER:-novawallet}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - novawallet-postgres-data:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-novawallet} -d ${POSTGRES_DB:-novawallet}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+
+  redis:
+    image: redis:8-alpine
+    container_name: novawallet-redis
+    # --maxmemory is a soft, in-process ceiling set below the hard cgroup
+    # `deploy.resources.limits.memory` below: it lets Redis itself evict keys
+    # (idempotency-cache entries only — nothing here is the source of truth)
+    # under pressure instead of the kernel OOM-killing the whole container,
+    # which would drop the connection entirely rather than degrade gracefully.
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}", "--maxmemory", "200mb", "--maxmemory-policy", "allkeys-lru"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "--no-auth-warning", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+        reservations:
+          memory: 128M
+
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    container_name: novawallet-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-novawallet}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+    # Named volume (rather than the container's own writable layer) plus a
+    # bounded restart policy work around a known Docker-Desktop-on-Windows
+    # race: on a fresh container, RabbitMQ's entrypoint can fail its very
+    # first boot with `Error when reading /var/lib/rabbitmq/.erlang.cookie:
+    # eacces` when many containers are created/started simultaneously (as
+    # `docker compose up` does for this whole stack) - a filesystem
+    # visibility lag between the entrypoint writing+chmod'ing the cookie and
+    # RabbitMQ reading it back, not a real permissions problem. It does not
+    # reproduce on a stable volume/retry.
+    volumes:
+      - novawallet-rabbitmq-data:/var/lib/rabbitmq
+    restart: on-failure:5
+    ports:
+      - "${RABBITMQ_PORT:-5672}:5672"
+      - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+
+  # One-shot migration runner (Option B of the "better way to handle migrations"
+  # redesign): builds the same image as `api` but invokes it with `--migrate-only`
+  # (see Program.cs), which applies pending EF Core migrations and exits - no
+  # Kestrel host, no JWT/Redis setup. Waits on `postgres`'s healthcheck alone;
+  # only NOVAWALLET_LEDGER_CONNECTION_STRING is passed in, because tracing the
+  # DI graph confirmed nothing else (Jwt, Redis) is touched
+  # before `--migrate-only` returns - `app.Run()` is never reached, so the
+  # ValidateOnStart()-gated JwtSettings validation and Redis's eager-but-
+  # non-blocking ConnectionMultiplexer.Connect() never come into play here.
+  migrator:
+    build:
+      context: .
+      dockerfile: src/NovaWallet.Api/Dockerfile
+    container_name: novawallet-migrator
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NOVAWALLET_LEDGER_CONNECTION_STRING: "Host=postgres;Port=5432;Database=${POSTGRES_DB:-novawallet};Username=${POSTGRES_USER:-novawallet};Password=${POSTGRES_PASSWORD}"
+    command: ["--migrate-only"]
+    restart: "no"
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+        reservations:
+          memory: 128M
+
+  # Deliberately no `depends_on: otel-collector` here: the OTLP exporter is
+  # async/non-blocking on connection failure (logs a warning, doesn't crash
+  # startup), so no startup ordering is required even though otel-collector
+  # now always starts alongside `api`.
+  api:
+    build:
+      context: .
+      dockerfile: src/NovaWallet.Api/Dockerfile
+    container_name: novawallet-api
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrator:
+        condition: service_completed_successfully
+    environment:
+      # Option A of the migrations redesign: `api` no longer auto-migrates
+      # based on ASPNETCORE_ENVIRONMENT (that coupling also silently gated
+      # Serilog's console sink behind "Development" - see
+      # ObservabilityOptions.EnableConsoleLog). Schema is already current by
+      # the time `api` starts, via the `migrator` service above; Production
+      # here is now a genuine choice, not a migration side-effect.
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_HTTP_PORTS: "8080"
+      NOVAWALLET_LEDGER_CONNECTION_STRING: "Host=postgres;Port=5432;Database=${POSTGRES_DB:-novawallet};Username=${POSTGRES_USER:-novawallet};Password=${POSTGRES_PASSWORD}"
+      REDIS_URI: "redis:6379,password=${REDIS_PASSWORD}"
+      Jwt__SecretKey: ${Jwt__SecretKey}
+      Jwt__Issuer: ${Jwt__Issuer:-NovaWallet.Ledger.Service}
+      Jwt__Audience: ${Jwt__Audience:-NovaWallet.Ledger.Clients}
+      Jwt__TokenExpirationTimeInMinutes: ${Jwt__TokenExpirationTimeInMinutes:-60}
+      ObservabilityOptions__ExporterUri: ${OBSERVABILITY_EXPORTER_URI:-http://otel-collector:4317}
+      # Rate limits (per window; window seconds default to 60 in appsettings.json).
+      # CreditPermitLimit 0 = unlimited. ForwardedHeaders only behind a trusted proxy.
+      RateLimiting__LoginPermitLimit: ${RATELIMIT_LOGIN_PERMIT_LIMIT:-30}
+      RateLimiting__UserPermitLimit: ${RATELIMIT_USER_PERMIT_LIMIT:-120}
+      RateLimiting__TransferPermitLimit: ${RATELIMIT_TRANSFER_PERMIT_LIMIT:-1000}
+      RateLimiting__CreditPermitLimit: ${RATELIMIT_CREDIT_PERMIT_LIMIT:-0}
+      ForwardedHeaders__Enabled: ${FORWARDED_HEADERS_ENABLED:-false}
+    ports:
+      - "${API_HTTP_PORT:-5000}:8080"
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+        reservations:
+          memory: 384M
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    container_name: novawallet-otel-collector
+    volumes:
+      - ./ops/otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    environment:
+      OPENOBSERVE_ORG: ${OPENOBSERVE_ORG:-default}
+      OPENOBSERVE_AUTH_HEADER: ${OPENOBSERVE_AUTH_HEADER}
+    ports:
+      - "${OTEL_COLLECTOR_GRPC_PORT:-4317}:4317"
+      - "${OTEL_COLLECTOR_HTTP_PORT:-4318}:4318"
+    depends_on:
+      - openobserve
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+        reservations:
+          memory: 128M
+
+  # Local telemetry sink — no third-party account needed. Web UI/API on
+  # OPENOBSERVE_HTTP_PORT; log in with ZO_ROOT_USER_EMAIL/ZO_ROOT_USER_PASSWORD
+  # from .env. No healthcheck configured (the minimal image ships no reliable
+  # readiness probe tooling we could verify), so `depends_on` above is plain
+  # start-order only, not a health-gated condition — matches otel-collector's
+  # own (pre-existing) lack of a healthcheck.
+  # NOTE on the memory cap below: OpenObserve auto-sizes its memory cache and
+  # DataFusion query-execution pool as a fraction of *host-visible* RAM, not
+  # the container's cgroup limit — its own boot log reports this explicitly
+  # (e.g. "Caches info: ... MEM max size 1.90 GB, Datafusion pool size: 2.85
+  # GB" was observed on a 7.6 GB host). Those are lazily-filled ceilings, not
+  # memory reserved upfront, so 1024M is safe for the light single-API
+  # ingest/query volume this take-home stack produces. If `docker logs
+  # novawallet-openobserve` ever shows the container exiting with code 137
+  # (OOM-killed), either raise `limits.memory` here or tune the
+  # `ZO_MEMORY_CACHE_*` family of env vars down (see
+  # https://openobserve.ai/docs/environment-variables/) — not verified
+  # against current docs in this session, so check the exact variable names
+  # before relying on them.
+  openobserve:
+    image: public.ecr.aws/zinclabs/openobserve:latest
+    container_name: novawallet-openobserve
+    environment:
+      ZO_ROOT_USER_EMAIL: ${ZO_ROOT_USER_EMAIL}
+      ZO_ROOT_USER_PASSWORD: ${ZO_ROOT_USER_PASSWORD}
+    volumes:
+      - novawallet-openobserve-data:/data
+    ports:
+      - "${OPENOBSERVE_HTTP_PORT:-5080}:5080"
+    deploy:
+      resources:
+        limits:
+          memory: 1024M
+        reservations:
+          memory: 512M
+
+volumes:
+  novawallet-postgres-data:
+  novawallet-openobserve-data:
+  novawallet-rabbitmq-data:
