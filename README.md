@@ -7,9 +7,9 @@ A high-concurrency, double-entry wallet ledger service built for **FirstBank Nov
 ## Architectural Principles & Core Decisions
 
 ### 1. Redis Coordinates, Database Guarantees Money
-* **Redis (`SET NX EX`)** acts as the front-line coordination layer for rapid idempotency checks and short-circuiting duplicate client submissions before they reach the database.
+* **Redis** backs the deposit webhook's `HybridCache` fast-path for redelivered NIP callbacks. It is not on the transfer path.
 * **Database (PostgreSQL)** is the single source of truth. All balance mutations and double-entry postings execute within an atomic DB transaction protected by deterministic lock ordering and unique constraints.
-* These two layers are wired together, not independent: Redis rejects an obvious duplicate cheaply; the DB lookup on `IdempotencyKey` is the authoritative path that actually determines whether a request is a replay, a conflict, or new (see §5 below).
+* Transfer idempotency is decided by the DB alone: the lookup on `WalletTransfers.IdempotencyKey` determines whether a request is a replay, a conflict, or new (see §5 below).
 
 ### 2. Inbound NIP Deposit Architecture (Asynchronous Clearing)
 Inbound NIP deposits arrive via API callbacks from NIBSS rails carrying a 30-digit `SessionId`.
@@ -29,16 +29,23 @@ Inbound NIP deposits arrive via API callbacks from NIBSS rails carrying a 30-dig
 * **Atomic DB Mutations:** Balance subtractions use atomic SQL updates (`WHERE AvailableBalanceKobo >= @AmountKobo`). Optimistic concurrency (`xmin`/`rowversion`) is avoided on hot debit paths to eliminate thread starvation under heavy contention.
 * **Kobo Integer Math:** All monetary figures are processed as 64-bit integers (`long`) in Kobo ($\text{₦1.00} = 100 \text{ kobo}$) to guarantee zero floating-point drift.
 
-### 5. Idempotency: Redis Fast-Path + DB Authoritative Path
+### 5. Idempotency: DB Authoritative Path
 The `Idempotency-Key` header is the client-supplied key for the transfer endpoint. Two requests with the same key must produce the same result; the same key with a *different* payload must be rejected.
 
-1. Compute `RequestPayloadHash = SHA-256(sorted request body)`.
-2. `SET idempotency:{key} processing NX EX 30` in Redis — if this fails (key exists), fall through to the DB lookup below rather than assuming it's a duplicate, since Redis is a cache, not the source of truth.
-3. In Postgres, look up `JournalEntries` by `IdempotencyKey`:
-    - **Not found** → proceed with the transfer, insert a new `JournalEntry` with the key and hash inside the same transaction.
-    - **Found, hash matches** → this is a replay; return the previously stored result without reprocessing.
-    - **Found, hash differs** → reject with `409 Conflict` (RFC 7807 `type: idempotency-key-reused`).
-4. The unique constraint on `IdempotencyKey` is what actually prevents two concurrent requests with the same key from both winning the insert race — the app-level lookup handles the common case, the constraint handles the race.
+1. Resolve the caller's wallet from the JWT (the source wallet is never in the request body) and compute `RequestPayloadHash = SHA-256(sorted { AmountInKobo, DestinationWalletId, Narration, resolved SourceWalletId })`. Because the source is part of the hash, the same key sent by a different user is a payload mismatch, never a replay, and never reveals the other user's outcome.
+2. In Postgres, look up `WalletTransfers` by `IdempotencyKey` — for **every** request, before any business check. The row exists for both completed and failed transfers:
+    - **Not found** → proceed with the transfer.
+    - **Found, hash matches** → this is a replay; return the stored outcome without reprocessing: the original success data, or the stored failure code and reason.
+    - **Found, hash differs** → reject with `409 Conflict` (`responseCode` `26`, "Idempotency-Key has already been used with a different request payload.").
+3. The unique constraints on `IdempotencyKey` (`WalletTransfers` and `JournalEntries`) are what actually prevent two concurrent requests with the same key from both winning the insert race. The loser re-reads the winner's row and applies the same replay/conflict rule.
+
+Redis is no longer part of this path: the earlier best-effort `SET NX` claim never changed the outcome (a lost or unavailable claim just fell through to this lookup), so it was removed.
+
+**Failed transfers are recorded.** When a transfer is rejected after both wallets are confirmed to exist, a `WalletTransfers` row is written with `Status = Failed`, no `JournalEntryId`, and the NIP `FailureCode` plus `FailureReason`. Recorded: insufficient balance (`51`), daily limit (`61`), a non-Active wallet (`57`) and a currency mismatch (`30`). Not recorded: validation errors, a missing wallet (the row would violate its foreign keys), and `96` (transient, so the key stays retryable). Because there is one row per key, a key that ended in a stored failure stays failed on replay — the client sends a new key to try again. The failed row is saved after the transaction rolls back and is best-effort: if that save fails, the caller still gets the original failure response.
+
+**Requery endpoints**
+* `GET /api/v1/wallets/transfer/{idempotencyKey}` *(JWT)* — returns `status` (`Completed`/`Failed`/`Reversed`), `responseCode`, `failureReason`, `paymentReference`, the wallet ids, `amountInKobo`, `narration` and `transactionDate`. Only the caller's own transfers are visible; anything else is `404` / `25`.
+* `GET /api/v1/wallets/credit/{sessionId}` *(anonymous, like `POST /credit`)* — returns the credit's `status` (`Pending`/`Completed`/`Failed`) with `responseCode` `09` / `00` / `96`. Unknown session is `404` / `25`.
 
 ### 6. $O(1)$ Atomic Daily Limit Enforcement
 Daily outbound transfer limits ($\text{₦500,000 / day}$) are tracked using an atomic `UPSERT` on a materialized `WalletDailyUsage` table within the same DB transaction. The `INSERT` branch is guarded with a `WHERE` clause exactly like the `UPDATE` branch — a wallet's *first* transfer of the day must be checked against the limit too, not just subsequent ones. `UsageDate` is anchored explicitly to WAT (`Africa/Lagos`, UTC+1, no DST) rather than the database session's timezone, since `CURRENT_DATE` alone would follow whatever timezone the Postgres session/container defaults to (typically UTC) and could bucket a transfer made late at night WAT into the wrong day:
@@ -57,9 +64,9 @@ If 0 rows are affected — on either the insert or update path — the transacti
 
 ### 7. Authorization, Input Validation & Scope Guards
 Several checks sit alongside the core concurrency/idempotency machinery and are enforced in the transfer handler before the DB transaction opens:
-* **Wallet ownership:** the source wallet's `UserId` must match the `sub` claim on the caller's JWT — a valid token alone does not authorize moving funds out of *any* wallet, only the caller's own.
+* **Wallet ownership:** the source wallet is inferred from the caller's session — it is the wallet whose `UserId` matches the `sub` claim on the JWT, so a caller can only ever move funds out of their own wallet. The transfer body therefore has no `sourceWalletId`; sending one is rejected with `30` ("SourceWalletId is not accepted; the source wallet is inferred from your session."). A caller with no wallet gets `25`.
 * **Destination status:** `WalletStatus` is checked on both sides of a transfer, not just the source. A frozen or closed beneficiary wallet must reject inbound credits the same way it rejects outbound debits — this applies to the NIP inbound path as well.
-* **Amount and self-transfer guards:** `AmountKobo` must be strictly positive, and `SourceWalletId` must differ from `BeneficiaryWalletId`. Enforced in application code and backstopped by a `CHECK ("AmountKobo" > 0)` constraint wherever amounts are persisted, so it isn't solely dependent on the app layer getting it right.
+* **Amount and self-transfer guards:** `AmountKobo` must be strictly positive, and the destination wallet must differ from the caller's own wallet (`30`). Enforced in application code and backstopped by a `CHECK ("AmountKobo" > 0)` constraint wherever amounts are persisted, so it isn't solely dependent on the app layer getting it right.
 * **Currency scope:** all wallets in this system are NGN-only. `Accounts.Currency` exists for future multi-currency support, but a transfer request is rejected at validation if source and destination currency codes ever differ — this is a stated scope decision, not an unhandled case.
 * **`POST /api/v1/wallets/credit` is intentionally unauthenticated** (`.AllowAnonymous()`) — it's an inbound callback from the NIP switch, not a customer-initiated action, and NIBSS-style inbound-credit callers don't carry this API's own bearer tokens. `DepositService`/`DepositConsumer` never consult caller identity; trust is placed entirely in the NIP payload (beneficiary account number, `SessionId`, external transaction reference) and its own idempotency guards (§5/§8). This overrides the app-wide `FallbackPolicy` (`RequireAuthenticatedUser()`, set in `AuthenticationExtensions`), which is standard ASP.NET Core behavior — `AllowAnonymous` metadata on an endpoint suppresses the fallback policy for that endpoint only.
 * **Rate limiting is per endpoint group and configurable** (`RateLimitingOptions`, config section `RateLimiting`, validated on startup; sliding window, registered in `RateLimiterServiceExtensions.RegisterRateLimitingPolicies`). Class defaults are conservative; `appsettings.json` / `docker-compose.yml` (`RATELIMIT_*` env vars) override them:
@@ -141,18 +148,21 @@ The `response_code` metric tag and the `deposit.outcome` span tag carry these va
  [ Client ] ──► [ POST /api/v1/wallets/transfer ]  (Idempotency-Key header required)
                        │
                        ▼
-             [ Redis Fast-Path Claim ]
-             (SET idempotency:key NX EX)
+        [ JWT -> resolve caller's wallet as source ]
+                       │
+                       ▼
+          [ DB Lookup by IdempotencyKey ]
                        │
                  ┌─────┴─────┐
-              Exists        New
+              Found         New
                  │             │
                  ▼             ▼
-        [ DB Lookup by Key ]  [ JWT & Business Validation ]
-        ├── Hash matches                │
-        │   → return cached result      ▼
-        └── Hash differs      [ PostgreSQL Transaction ]
-            → 409 Conflict    ├── Lock IDs in Order: Min(A, B) -> Max(A, B)
+        ├── Hash matches      [ Business Validation ]
+        │   → stored result   (rejections: recorded as Failed row)
+        │     (success/failure)       │
+        └── Hash differs              ▼
+            → 409 Conflict    [ PostgreSQL Transaction ]
+                              ├── Lock IDs in Order: Min(A, B) -> Max(A, B)
                                ├── Atomic Daily Usage Guarded UPSERT
                                ├── Deduct Sender AvailableBalance
                                ├── Credit Recipient AvailableBalance
@@ -290,7 +300,11 @@ CREATE TABLE "AuditLog" (
 -- so a "list my transfers" / wallet statement view can query it directly.
 CREATE TABLE "WalletTransfers" (
     "Id" UUID PRIMARY KEY,
-    "JournalEntryId" UUID NOT NULL UNIQUE REFERENCES "JournalEntries"("Id"),
+    "JournalEntryId" UUID UNIQUE REFERENCES "JournalEntries"("Id"), -- NULL for a Failed transfer (no ledger posting)
+    "IdempotencyKey" VARCHAR(128) UNIQUE NOT NULL,                  -- one row per key, completed or failed
+    "RequestPayloadHash" VARCHAR(64) NOT NULL,
+    "FailureCode" VARCHAR(4),                                       -- NIP code of a Failed transfer, e.g. '51'
+    "FailureReason" VARCHAR(500),                                   -- e.g. 'Insufficient balance.'
     "SourceWalletId" UUID NOT NULL REFERENCES "Wallets"("Id"),
     "DestinationWalletId" UUID NOT NULL REFERENCES "Wallets"("Id"),
     "AmountKobo" BIGINT NOT NULL,

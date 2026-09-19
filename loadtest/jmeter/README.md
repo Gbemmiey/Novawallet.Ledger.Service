@@ -6,7 +6,7 @@ Auth is the API's mock login (`POST /api/v1/auth/login` with a random `userId` a
 
 ## Overdraw plan (concurrent debits against one balance)
 
-Checks that the guarded `UPDATE` never lets concurrent debits overdraw a wallet. Defaults reproduce the scenario "50 concurrent N500 debits vs a N10,000 balance": exactly **20** transfers succeed, **30** are rejected with `422 Insufficient balance`, the sender ends at **0** and the receiver at **1,000,000** kobo.
+Checks that the guarded `UPDATE` never lets concurrent debits overdraw a wallet. Defaults reproduce the scenario "50 concurrent N500 debits vs a N10,000 balance": exactly **20** transfers succeed, **30** are rejected with `422 Insufficient balance`, the sender ends at **0** and the receiver at **1,000,000** kobo. The 30 rejections are also stored as `WalletTransfers` rows with `Status = 'Failed'`, `FailureCode = '51'` and `FailureReason = 'Insufficient balance.'`, one per Idempotency-Key (`SELECT "FailureCode", "FailureReason", count(*) FROM "WalletTransfers" WHERE "Status" = 'Failed' GROUP BY 1, 2;`). The transfer body carries no `sourceWalletId`: the source is the wallet of the sender whose token the plan uses.
 
 Run from inside the overdraw folder so the `.jtl`, the HTML report and `jmeter.log` all land there (JMeter resolves `-l`, `-o` and `jmeter.log` relative to the current directory). The `-o` folder must not exist or must be empty, so use a timestamped name:
 

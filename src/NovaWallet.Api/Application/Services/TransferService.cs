@@ -8,7 +8,6 @@ using NovaWallet.Api.Core.Services;
 using NovaWallet.Api.Infrastructure.Data;
 using NovaWallet.Api.Infrastructure.Extensions.OpenTelemetry;
 using Npgsql;
-using StackExchange.Redis;
 using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
@@ -23,33 +22,76 @@ namespace NovaWallet.Api.Application.Services;
 /// </summary>
 public sealed class TransferService : ITransferService
 {
-    // Best-effort Redis "processing" claim, matching README §5 step 2 literally.
-    // Whether the claim succeeds, fails (contention), or Redis is simply unavailable
-    // (e.g. local dev without REDIS_URI - see MissingRedisWarningHostedService), the
-    // outcome never changes correctness: only a failed/unavailable claim routes to the
-    // DB-authoritative IdempotencyKey lookup below, which is what actually decides
-    // replay vs. conflict vs. genuinely-new. Redis is a coordination fast-path, never
-    // the source of truth (README §1).
-    private static readonly TimeSpan RedisClaimTtl = TimeSpan.FromSeconds(30);
+    // Idempotency is decided by the DB alone: WalletTransfers.IdempotencyKey is unique, and every
+    // request looks it up before doing any business work. The earlier best-effort Redis
+    // "processing" claim never changed that outcome (a lost or unavailable claim only fell
+    // through to this same lookup), so it was removed rather than left as a wasted round trip.
 
     private readonly ILogger<TransferService> _logger;
     private readonly NovaWalletDbContext _dbContext;
     private readonly IRequestContext _requestContext;
     private readonly NovaWalletMetrics _metrics;
-    private readonly IConnectionMultiplexer? _redisConnection;
 
     public TransferService(
         ILogger<TransferService> logger,
         NovaWalletDbContext dbContext,
         IRequestContext requestContext,
-        NovaWalletMetrics metrics,
-        IConnectionMultiplexer? redisConnection = null)
+        NovaWalletMetrics metrics)
     {
         _logger = logger;
         _dbContext = dbContext;
         _requestContext = requestContext;
         _metrics = metrics;
-        _redisConnection = redisConnection;
+    }
+
+    /// <summary>
+    /// Looks up the stored outcome (Completed or Failed) of a transfer by Idempotency-Key.
+    /// Scoped to the caller: a key whose source wallet is not the caller's is reported as not
+    /// found, so one user can never learn another user's transfer outcome.
+    /// </summary>
+    public async Task<ServiceApiResponse<WalletTransferStatusResponse>> RequeryTransfer(string idempotencyKey, CancellationToken cancellationToken)
+    {
+        var callerUserId = _requestContext.UserId;
+
+        if (callerUserId is null)
+        {
+            return ServiceApiResponse<WalletTransferStatusResponse>.CreateFailure(ResponseCodes.AccessDenied);
+        }
+
+        if (string.IsNullOrWhiteSpace(idempotencyKey) || idempotencyKey.Length > 128)
+        {
+            return ServiceApiResponse<WalletTransferStatusResponse>.CreateFailure(
+                ResponseCodes.InvalidEntryDetected.ResponseCode,
+                "Idempotency key must be between 1 and 128 characters.");
+        }
+
+        var transfer = await _dbContext.WalletTransfers
+            .AsNoTracking()
+            .Where(t => t.IdempotencyKey == idempotencyKey && t.SourceWallet!.UserId == callerUserId.Value)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (transfer is null)
+        {
+            return ServiceApiResponse<WalletTransferStatusResponse>.CreateFailure(ResponseCodes.NoRecordReturned);
+        }
+
+        var isFailed = transfer.Status == TransferStatus.Failed;
+
+        return ServiceApiResponse<WalletTransferStatusResponse>.CreateSuccess(new WalletTransferStatusResponse
+        {
+            IdempotencyKey = transfer.IdempotencyKey,
+            Status = transfer.Status.ToString(),
+            ResponseCode = isFailed
+                ? transfer.FailureCode ?? ResponseCodes.Failed.ResponseCode
+                : ResponseCodes.Success.ResponseCode,
+            FailureReason = isFailed ? transfer.FailureReason : null,
+            PaymentReference = transfer.PaymentReference,
+            SourceWalletId = transfer.SourceWalletId.ToString(),
+            DestinationWalletId = transfer.DestinationWalletId.ToString(),
+            AmountInKobo = transfer.AmountKobo,
+            Narration = transfer.Narration,
+            TransactionDate = transfer.TransactionDate
+        });
     }
 
     /// <summary>
@@ -103,19 +145,13 @@ public sealed class TransferService : ITransferService
         }
 
         // ---- Structural / scope validation (README §7), ahead of any DB work ----
-        if (!Guid.TryParse(request.SourceWalletId, out var sourceWalletId) ||
-            !Guid.TryParse(request.DestinationWalletId, out var destinationWalletId))
+        // The source wallet is never client-supplied; it is resolved from the session below.
+        // (A stale sourceWalletId in the body is rejected by WalletTransferRequestValidator.)
+        if (!Guid.TryParse(request.DestinationWalletId, out var destinationWalletId))
         {
             return ServiceApiResponse<WalletTransferResponse>.CreateFailure(
                 ResponseCodes.InvalidEntryDetected.ResponseCode,
-                "SourceWalletId and DestinationWalletId must be valid identifiers.");
-        }
-
-        if (sourceWalletId == destinationWalletId)
-        {
-            return ServiceApiResponse<WalletTransferResponse>.CreateFailure(
-                ResponseCodes.InvalidEntryDetected.ResponseCode,
-                "SourceWalletId and DestinationWalletId must differ.");
+                "DestinationWalletId must be a valid identifier.");
         }
 
         if (request.AmountInKobo <= 0)
@@ -125,17 +161,13 @@ public sealed class TransferService : ITransferService
                 "AmountInKobo must be strictly positive.");
         }
 
-        var requestPayloadHash = ComputeRequestPayloadHash(request);
-
         try
         {
             return await ProcessTransferAsync(
                 request,
-                sourceWalletId,
                 destinationWalletId,
                 callerUserId.Value,
                 idempotencyKey,
-                requestPayloadHash,
                 cancellationToken);
         }
         catch (OperationCanceledException)
@@ -146,9 +178,9 @@ public sealed class TransferService : ITransferService
         {
             _logger.LogError(
                 ex,
-                "Transfer processing failed unexpectedly. IdempotencyKey: {IdempotencyKey}, SourceWalletId: {SourceWalletId}, DestinationWalletId: {DestinationWalletId}",
+                "Transfer processing failed unexpectedly. IdempotencyKey: {IdempotencyKey}, CallerUserId: {CallerUserId}, DestinationWalletId: {DestinationWalletId}",
                 idempotencyKey,
-                sourceWalletId,
+                callerUserId,
                 destinationWalletId);
 
             return ServiceApiResponse<WalletTransferResponse>.SystemMalFunctioned();
@@ -157,89 +189,79 @@ public sealed class TransferService : ITransferService
 
     private async Task<ServiceApiResponse<WalletTransferResponse>> ProcessTransferAsync(
         WalletTransferRequest request,
-        Guid sourceWalletId,
         Guid destinationWalletId,
         Guid callerUserId,
         string idempotencyKey,
-        string requestPayloadHash,
         CancellationToken cancellationToken)
     {
-        // ---- Redis fast-path claim (README §5 step 2) ----
-        var claimed = await TryClaimIdempotencyKeyAsync(idempotencyKey, cancellationToken);
-
-        if (!claimed)
-        {
-            // Claim contention or Redis unavailable: fall through to the DB-authoritative
-            // lookup rather than assuming this is a duplicate (README §5 step 2).
-            var existingLookup = await FindByIdempotencyKey(idempotencyKey, cancellationToken);
-
-            if (existingLookup is { } existing)
-            {
-                if (existing.RequestPayloadHash == requestPayloadHash)
-                {
-                    _logger.LogInformation(
-                        "Transfer replay detected for IdempotencyKey {IdempotencyKey}. Returning original result.",
-                        idempotencyKey);
-
-                    return ServiceApiResponse<WalletTransferResponse>.CreateSuccess(
-                        ToResponse(request, existing));
-                }
-
-                _logger.LogWarning(
-                    "Transfer rejected - Idempotency-Key {IdempotencyKey} reused with a different request payload.",
-                    idempotencyKey);
-
-                return ServiceApiResponse<WalletTransferResponse>.CreateFailure(
-                    ResponseCodes.Conflict.ResponseCode,
-                    "Idempotency-Key has already been used with a different request payload.");
-            }
-        }
-
-        // ---- Business validation (README §7), ahead of opening a DB transaction ----
+        // ---- Resolve the source wallet from the session, plus the destination ----
         var wallets = await _dbContext.Wallets
             .AsNoTracking()
-            .Where(w => w.Id == sourceWalletId || w.Id == destinationWalletId)
+            .Where(w => w.UserId == callerUserId || w.Id == destinationWalletId)
             .Select(w => new { w.Id, w.UserId, w.Status, w.Currency, w.AccountId, AccountNumber = w.Account!.AccountNumber })
             .ToListAsync(cancellationToken);
 
-        var sourceWallet = wallets.FirstOrDefault(w => w.Id == sourceWalletId);
+        var sourceWallet = wallets.FirstOrDefault(w => w.UserId == callerUserId);
 
         if (sourceWallet is null)
         {
+            // The caller has no wallet to send from.
             return ServiceApiResponse<WalletTransferResponse>.CreateFailure(ResponseCodes.NoRecordReturned);
         }
 
-        // Wallet ownership: a valid token alone does not authorize moving funds out of
-        // any wallet, only the caller's own (README §7).
-        if (sourceWallet.UserId != callerUserId)
-        {
-            _logger.LogWarning(
-                "Transfer rejected - caller {CallerUserId} does not own source Wallet {SourceWalletId}.",
-                callerUserId,
-                sourceWalletId);
+        var sourceWalletId = sourceWallet.Id;
 
-            return ServiceApiResponse<WalletTransferResponse>.CreateFailure(ResponseCodes.RequestNotAllowed);
+        if (sourceWalletId == destinationWalletId)
+        {
+            return ServiceApiResponse<WalletTransferResponse>.CreateFailure(
+                ResponseCodes.InvalidEntryDetected.ResponseCode,
+                "The destination wallet must differ from your own wallet.");
+        }
+
+        // The hash covers the resolved source wallet, so the same key sent by a different user
+        // can never be mistaken for a replay of this one.
+        var requestPayloadHash = ComputeRequestPayloadHash(request, sourceWalletId, destinationWalletId);
+
+        // ---- Idempotency (README §5): the DB is the only authority ----
+        // Runs for every request, ahead of any business check. Same key + same payload replays
+        // the stored outcome (success or failure); same key + different payload is rejected.
+        var existing = await FindByIdempotencyKey(idempotencyKey, cancellationToken);
+
+        if (existing is not null)
+        {
+            return ResolveExisting(existing, requestPayloadHash, idempotencyKey);
         }
 
         var destinationWallet = wallets.FirstOrDefault(w => w.Id == destinationWalletId);
 
         if (destinationWallet is null)
         {
+            // Not recorded: a missing wallet cannot be stored (WalletTransfers has FKs to Wallets).
             return ServiceApiResponse<WalletTransferResponse>.CreateFailure(ResponseCodes.NoRecordReturned);
         }
 
+        // From here both wallets exist, so business rejections are recorded as Failed rows.
         if (sourceWallet.Currency != destinationWallet.Currency ||
             sourceWallet.Currency != NovaWalletConstants.CurrencyCode)
         {
-            return ServiceApiResponse<WalletTransferResponse>.CreateFailure(
+            var currencyFailure = ServiceApiResponse<WalletTransferResponse>.CreateFailure(
                 ResponseCodes.InvalidEntryDetected.ResponseCode,
                 "Cross-currency transfers are not supported.");
+
+            await RecordFailedTransferAsync(
+                sourceWalletId, destinationWalletId, request, idempotencyKey, requestPayloadHash, currencyFailure);
+
+            return currencyFailure;
         }
 
         // ---- Transactional write - db transaction wrapped in an execution strategy ----
         var strategy = _dbContext.Database.CreateExecutionStrategy();
 
-        return await strategy.ExecuteAsync(async () =>
+        // Cleared when the lambda returns a replay/conflict resolved from the DB, which must not
+        // be recorded again.
+        var recordFailure = true;
+
+        var result = await strategy.ExecuteAsync(async () =>
         {
             await using var transaction = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
 
@@ -388,6 +410,8 @@ public sealed class TransferService : ITransferService
                     destinationWalletId: destinationWalletId,
                     amountKobo: request.AmountInKobo,
                     narration: request.Narration,
+                    idempotencyKey: idempotencyKey,
+                    requestPayloadHash: requestPayloadHash,
                     transactionDate: journalEntry.CreatedAt);
 
                 _dbContext.JournalEntries.Add(journalEntry);
@@ -431,36 +455,27 @@ public sealed class TransferService : ITransferService
 
                 // Lost a race against a concurrent request carrying the same
                 // Idempotency-Key. Re-resolve authoritatively via the DB - the unique
-                // constraint on JournalEntries.IdempotencyKey is what actually prevents
-                // two concurrent requests from both winning the insert race (README §5
-                // step 4); this is the app-level reconciliation of that outcome.
+                // constraints on WalletTransfers/JournalEntries.IdempotencyKey are what
+                // actually prevent two concurrent requests from both winning the insert race
+                // (README §5 step 4); this is the app-level reconciliation of that outcome.
+                // Whatever the winner stored is returned as-is, so it is never re-recorded.
+                recordFailure = false;
+
                 var raceWinner = await FindByIdempotencyKey(idempotencyKey, cancellationToken);
 
-                if (raceWinner is { } winner)
+                if (raceWinner is not null)
                 {
-                    if (winner.RequestPayloadHash == requestPayloadHash)
-                    {
-                        _logger.LogInformation(
-                            "Transfer replay detected after unique constraint race for IdempotencyKey {IdempotencyKey}.",
-                            idempotencyKey);
-
-                        return ServiceApiResponse<WalletTransferResponse>.CreateSuccess(
-                            ToResponse(request, winner));
-                    }
-
-                    _logger.LogWarning(
+                    _logger.LogInformation(
                         ex,
-                        "Transfer rejected - Idempotency-Key {IdempotencyKey} lost a unique constraint race with a different payload.",
+                        "Transfer lost a unique constraint race for IdempotencyKey {IdempotencyKey}; resolving against the winner.",
                         idempotencyKey);
 
-                    return ServiceApiResponse<WalletTransferResponse>.CreateFailure(
-                        ResponseCodes.Conflict.ResponseCode,
-                        "Idempotency-Key has already been used with a different request payload.");
+                    return ResolveExisting(raceWinner, requestPayloadHash, idempotencyKey);
                 }
 
                 _logger.LogError(
                     ex,
-                    "Transfer lost a unique constraint race but no JournalEntry was found for IdempotencyKey {IdempotencyKey}.",
+                    "Transfer lost a unique constraint race but no WalletTransfer was found for IdempotencyKey {IdempotencyKey}.",
                     idempotencyKey);
 
                 return ServiceApiResponse<WalletTransferResponse>.SystemMalFunctioned();
@@ -497,6 +512,107 @@ public sealed class TransferService : ITransferService
                 return ServiceApiResponse<WalletTransferResponse>.SystemMalFunctioned();
             }
         });
+
+        // Recorded only now, after the transaction has been rolled back - saving inside it
+        // would let the rollback erase the row.
+        if (recordFailure && IsRecordableFailure(result.ResponseCode))
+        {
+            await RecordFailedTransferAsync(
+                sourceWalletId, destinationWalletId, request, idempotencyKey, requestPayloadHash, result);
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Business rejections that are final for a given Idempotency-Key and therefore stored:
+    /// insufficient balance (51), daily limit (61) and a non-Active wallet (57). Everything else
+    /// is not stored - 96 is transient and must stay retryable under the same key, and 26/00 are
+    /// replay/success outcomes.
+    /// </summary>
+    private static bool IsRecordableFailure(string? responseCode)
+    {
+        return responseCode == NipResponseCodes.NoSufficientFunds
+            || responseCode == NipResponseCodes.TransferLimitExceeded
+            || responseCode == NipResponseCodes.TransactionNotPermitted;
+    }
+
+    /// <summary>
+    /// Stores a rejected transfer as a Failed WalletTransfer so it can be inspected in the table
+    /// and requeried by key. Best-effort: it never changes the response returned to the caller.
+    /// A unique violation means a concurrent request already stored this key, which is fine.
+    /// </summary>
+    private async Task RecordFailedTransferAsync(
+        Guid sourceWalletId,
+        Guid destinationWalletId,
+        WalletTransferRequest request,
+        string idempotencyKey,
+        string requestPayloadHash,
+        ServiceApiResponse<WalletTransferResponse> failure)
+    {
+        try
+        {
+            // Drop anything left tracked by the rolled-back attempt.
+            _dbContext.ChangeTracker.Clear();
+
+            _dbContext.WalletTransfers.Add(WalletTransfer.CreateFailed(
+                sourceWalletId: sourceWalletId,
+                destinationWalletId: destinationWalletId,
+                amountKobo: request.AmountInKobo,
+                narration: request.Narration,
+                idempotencyKey: idempotencyKey,
+                requestPayloadHash: requestPayloadHash,
+                failureCode: failure.ResponseCode,
+                failureReason: failure.ResponseMessage ?? string.Empty));
+
+            await _dbContext.SaveChangesAsync(CancellationToken.None);
+        }
+        catch (DbUpdateException ex) when (IsUniqueViolation(ex))
+        {
+            _logger.LogInformation(
+                "Failed transfer for IdempotencyKey {IdempotencyKey} was already recorded by a concurrent request.",
+                idempotencyKey);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Could not record failed transfer for IdempotencyKey {IdempotencyKey}. The response is unaffected.",
+                idempotencyKey);
+        }
+    }
+
+    /// <summary>
+    /// Applies the idempotency rule to a stored transfer: same payload replays the stored
+    /// outcome (success data, or the stored failure code and reason); a different payload is
+    /// rejected as a conflict.
+    /// </summary>
+    private ServiceApiResponse<WalletTransferResponse> ResolveExisting(
+        WalletTransfer existing, string requestPayloadHash, string idempotencyKey)
+    {
+        if (!string.Equals(existing.RequestPayloadHash, requestPayloadHash, StringComparison.Ordinal))
+        {
+            _logger.LogWarning(
+                "Transfer rejected - Idempotency-Key {IdempotencyKey} reused with a different request payload.",
+                idempotencyKey);
+
+            return ServiceApiResponse<WalletTransferResponse>.CreateFailure(
+                ResponseCodes.Conflict.ResponseCode,
+                "Idempotency-Key has already been used with a different request payload.");
+        }
+
+        _logger.LogInformation(
+            "Transfer replay detected for IdempotencyKey {IdempotencyKey}. Returning original result.",
+            idempotencyKey);
+
+        if (existing.Status == TransferStatus.Failed)
+        {
+            return ServiceApiResponse<WalletTransferResponse>.CreateFailure(
+                existing.FailureCode ?? ResponseCodes.Failed.ResponseCode,
+                existing.FailureReason);
+        }
+
+        return ServiceApiResponse<WalletTransferResponse>.CreateSuccess(ToResponse(existing));
     }
 
     /// <summary>
@@ -596,82 +712,14 @@ public sealed class TransferService : ITransferService
     }
 
     /// <summary>
-    /// Looks up a transfer by its IdempotencyKey, left-joining the persisted
-    /// WalletTransfer row (written in the same transaction as the JournalEntry, so the
-    /// two are always consistent with each other - the join is defensive, not expected
-    /// to ever come back null when a JournalEntry is found).
+    /// Looks up the stored transfer (Completed or Failed) for an Idempotency-Key. The unique
+    /// index on WalletTransfers.IdempotencyKey guarantees at most one row.
     /// </summary>
-    private Task<IdempotencyLookupResult?> FindByIdempotencyKey(string idempotencyKey, CancellationToken cancellationToken)
+    private Task<WalletTransfer?> FindByIdempotencyKey(string idempotencyKey, CancellationToken cancellationToken)
     {
-        return (
-            from j in _dbContext.JournalEntries.AsNoTracking()
-            where j.IdempotencyKey == idempotencyKey
-            join t in _dbContext.WalletTransfers.AsNoTracking() on j.Id equals t.JournalEntryId into transfers
-            from t in transfers.DefaultIfEmpty()
-            select new IdempotencyLookupResult(j.Id, j.CreatedAt, j.RequestPayloadHash, t))
-            .FirstOrDefaultAsync(cancellationToken);
-    }
-
-    private sealed record IdempotencyLookupResult(
-        Guid JournalEntryId, DateTime JournalEntryCreatedAt, string RequestPayloadHash, WalletTransfer? Transfer);
-
-    private async Task<bool> TryClaimIdempotencyKeyAsync(string idempotencyKey, CancellationToken cancellationToken)
-    {
-        if (_redisConnection is null)
-        {
-            return false;
-        }
-
-        try
-        {
-            var redisDatabase = _redisConnection.GetDatabase();
-
-            return await redisDatabase.StringSetAsync(
-                RedisClaimKey(idempotencyKey), "processing", RedisClaimTtl, When.NotExists);
-        }
-        catch (Exception ex)
-        {
-            // Redis is a coordination fast-path, never the source of truth (README §1).
-            // Any failure here simply routes to the DB-authoritative lookup instead.
-            _logger.LogWarning(
-                ex,
-                "Redis idempotency claim failed for IdempotencyKey {IdempotencyKey}. Falling through to DB lookup.",
-                idempotencyKey);
-
-            return false;
-        }
-    }
-
-    private static string RedisClaimKey(string idempotencyKey) => $"idempotency:{idempotencyKey}";
-
-    /// <summary>
-    /// Reconstructs the response for a replayed request from the persisted
-    /// WalletTransfer row - the authoritative, queryable record of this transfer.
-    /// Falls back to echoing the (hash-verified-identical) incoming request only if no
-    /// WalletTransfer is found, which should be unreachable in practice since both rows
-    /// are written in the same DB transaction; kept purely as a defensive fallback so a
-    /// replay can never fail outright over this.
-    /// </summary>
-    private WalletTransferResponse ToResponse(WalletTransferRequest request, IdempotencyLookupResult lookup)
-    {
-        if (lookup.Transfer is { } transfer)
-        {
-            return ToResponse(transfer);
-        }
-
-        _logger.LogWarning(
-            "WalletTransfer row missing for JournalEntry {JournalEntryId} despite a matching IdempotencyKey hash - falling back to echoing the request.",
-            lookup.JournalEntryId);
-
-        return new WalletTransferResponse
-        {
-            SourceWalletId = request.SourceWalletId,
-            DestinationWalletId = request.DestinationWalletId,
-            AmountInKobo = request.AmountInKobo,
-            Narration = request.Narration,
-            TransactionDate = lookup.JournalEntryCreatedAt,
-            PaymentReference = lookup.JournalEntryId.ToString()
-        };
+        return _dbContext.WalletTransfers
+            .AsNoTracking()
+            .FirstOrDefaultAsync(t => t.IdempotencyKey == idempotencyKey, cancellationToken);
     }
 
     /// <summary>
@@ -703,16 +751,20 @@ public sealed class TransferService : ITransferService
             : $"{prefix} - {narration}";
     }
 
-    private static string ComputeRequestPayloadHash(WalletTransferRequest request)
+    private static string ComputeRequestPayloadHash(WalletTransferRequest request, Guid sourceWalletId, Guid destinationWalletId)
     {
         // SHA-256 of the sorted request body (README §5 step 1) - sorted by field name
-        // so the hash is stable regardless of the caller's JSON property ordering.
+        // so the hash is stable regardless of the caller's JSON property ordering. The source
+        // is the session-resolved wallet, not a body field, and both ids use the canonical Guid
+        // format so casing differences in the body do not change the hash. (Rows written before
+        // this change hashed the raw strings, so a replay of one of those whose ids were not
+        // lower-case is reported as a payload mismatch.)
         var canonical = string.Join('|', new[]
         {
             $"AmountInKobo={request.AmountInKobo}",
-            $"DestinationWalletId={request.DestinationWalletId}",
+            $"DestinationWalletId={destinationWalletId}",
             $"Narration={request.Narration}",
-            $"SourceWalletId={request.SourceWalletId}"
+            $"SourceWalletId={sourceWalletId}"
         }.OrderBy(x => x, StringComparer.Ordinal));
 
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical)));

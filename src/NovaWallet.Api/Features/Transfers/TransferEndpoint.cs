@@ -40,7 +40,27 @@ namespace NovaWallet.Api.Features.Transfers
                 })
                 .WithValidation<WalletTransferRequest>();
 
+            // Requery: the stored outcome (Completed or Failed, with reason) of a transfer, by the
+            // Idempotency-Key it was submitted under. Read budget is UserPolicy, not TransferPolicy.
+            group
+                .MapGet("/transfer/{idempotencyKey}", RequeryTransfer)
+                .WithName("RequeryTransfer")
+                .WithTags("Transfers")
+                .RequireAuthorization()
+                .RequireRateLimiting(NovaWalletConstants.RateLimitingConstants.UserPolicy)
+                .Produces<ServiceApiResponse<WalletTransferStatusResponse>>(StatusCodes.Status200OK);
+
             return group;
+        }
+
+        private static async Task<IResult> RequeryTransfer(
+            string idempotencyKey,
+            HttpContext httpContext,
+            ITransferService transferService,
+            CancellationToken cancellationToken)
+        {
+            var response = await transferService.RequeryTransfer(idempotencyKey, cancellationToken);
+            return response.ToResult(httpContext);
         }
 
         private static async Task<IResult> SubmitTransfer(

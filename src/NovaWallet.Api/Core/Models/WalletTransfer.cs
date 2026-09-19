@@ -27,7 +27,10 @@ namespace NovaWallet.Api.Core.Models
     public class WalletTransfer
     {
         public Guid Id { get; }
-        public Guid JournalEntryId { get; }
+
+        /// <summary>The ledger posting for a <see cref="TransferStatus.Completed"/> transfer.
+        /// Null for a <see cref="TransferStatus.Failed"/> transfer, which never posts.</summary>
+        public Guid? JournalEntryId { get; }
         public JournalEntry? JournalEntry { get; private set; }
         public Guid SourceWalletId { get; }
         public Wallet? SourceWallet { get; private set; }
@@ -37,11 +40,26 @@ namespace NovaWallet.Api.Core.Models
         public string? Narration { get; }
         public string PaymentReference { get; }
         public TransferStatus Status { get; private set; }
+
+        /// <summary>Client-supplied Idempotency-Key. Unique: one row per key, whether the
+        /// transfer completed or failed.</summary>
+        public string IdempotencyKey { get; }
+
+        /// <summary>SHA-256 of the canonical request payload, used to reject the same key
+        /// reused with a different payload.</summary>
+        public string RequestPayloadHash { get; }
+
+        /// <summary>NIP response code of a failed transfer (e.g. "51"). Null when not failed.</summary>
+        public string? FailureCode { get; }
+
+        /// <summary>Human-readable reason of a failed transfer. Null when not failed.</summary>
+        public string? FailureReason { get; }
         public DateTime TransactionDate { get; }
         public DateTime DateModified { get; private set; }
 
-        private WalletTransfer(Guid id, Guid journalEntryId, Guid sourceWalletId, Guid destinationWalletId,
+        private WalletTransfer(Guid id, Guid? journalEntryId, Guid sourceWalletId, Guid destinationWalletId,
             long amountKobo, string? narration, string paymentReference, TransferStatus status,
+            string idempotencyKey, string requestPayloadHash, string? failureCode, string? failureReason,
             DateTime transactionDate, DateTime dateModified)
         {
             Id = id;
@@ -52,23 +70,22 @@ namespace NovaWallet.Api.Core.Models
             Narration = narration;
             PaymentReference = paymentReference;
             Status = status;
+            IdempotencyKey = idempotencyKey;
+            RequestPayloadHash = requestPayloadHash;
+            FailureCode = failureCode;
+            FailureReason = failureReason;
             TransactionDate = transactionDate;
             DateModified = dateModified;
         }
 
         public static WalletTransfer Create(Guid journalEntryId, Guid sourceWalletId, Guid destinationWalletId,
-            long amountKobo, string? narration, DateTime transactionDate)
+            long amountKobo, string? narration, string idempotencyKey, string requestPayloadHash,
+            DateTime transactionDate)
         {
             if (journalEntryId == Guid.Empty)
                 throw new ArgumentException("JournalEntryId is required.", nameof(journalEntryId));
-            if (sourceWalletId == Guid.Empty)
-                throw new ArgumentException("SourceWalletId is required.", nameof(sourceWalletId));
-            if (destinationWalletId == Guid.Empty)
-                throw new ArgumentException("DestinationWalletId is required.", nameof(destinationWalletId));
-            if (sourceWalletId == destinationWalletId)
-                throw new ArgumentException("SourceWalletId and DestinationWalletId must differ.", nameof(destinationWalletId));
-            if (amountKobo <= 0)
-                throw new ArgumentOutOfRangeException(nameof(amountKobo), "AmountKobo must be positive.");
+
+            ValidateCommon(sourceWalletId, destinationWalletId, amountKobo, idempotencyKey, requestPayloadHash);
 
             return new WalletTransfer(
                 id: Uuid.NewSequential(),
@@ -79,8 +96,63 @@ namespace NovaWallet.Api.Core.Models
                 narration: narration,
                 paymentReference: Uuid.NewSequential().ToString(),
                 status: TransferStatus.Completed,
+                idempotencyKey: idempotencyKey,
+                requestPayloadHash: requestPayloadHash,
+                failureCode: null,
+                failureReason: null,
                 transactionDate: transactionDate,
                 dateModified: transactionDate);
+        }
+
+        /// <summary>
+        /// Records a transfer that was rejected after both wallets were confirmed to exist.
+        /// There is no ledger posting, so <see cref="JournalEntryId"/> stays null.
+        /// </summary>
+        public static WalletTransfer CreateFailed(Guid sourceWalletId, Guid destinationWalletId,
+            long amountKobo, string? narration, string idempotencyKey, string requestPayloadHash,
+            string failureCode, string failureReason)
+        {
+            ValidateCommon(sourceWalletId, destinationWalletId, amountKobo, idempotencyKey, requestPayloadHash);
+
+            if (string.IsNullOrWhiteSpace(failureCode))
+                throw new ArgumentException("FailureCode is required.", nameof(failureCode));
+
+            var now = DateTime.UtcNow;
+
+            return new WalletTransfer(
+                id: Uuid.NewSequential(),
+                journalEntryId: null,
+                sourceWalletId: sourceWalletId,
+                destinationWalletId: destinationWalletId,
+                amountKobo: amountKobo,
+                narration: narration,
+                paymentReference: Uuid.NewSequential().ToString(),
+                status: TransferStatus.Failed,
+                idempotencyKey: idempotencyKey,
+                requestPayloadHash: requestPayloadHash,
+                failureCode: failureCode,
+                failureReason: string.IsNullOrWhiteSpace(failureReason)
+                    ? null
+                    : (failureReason.Length > 500 ? failureReason[..500] : failureReason),
+                transactionDate: now,
+                dateModified: now);
+        }
+
+        private static void ValidateCommon(Guid sourceWalletId, Guid destinationWalletId, long amountKobo,
+            string idempotencyKey, string requestPayloadHash)
+        {
+            if (sourceWalletId == Guid.Empty)
+                throw new ArgumentException("SourceWalletId is required.", nameof(sourceWalletId));
+            if (destinationWalletId == Guid.Empty)
+                throw new ArgumentException("DestinationWalletId is required.", nameof(destinationWalletId));
+            if (sourceWalletId == destinationWalletId)
+                throw new ArgumentException("SourceWalletId and DestinationWalletId must differ.", nameof(destinationWalletId));
+            if (amountKobo <= 0)
+                throw new ArgumentOutOfRangeException(nameof(amountKobo), "AmountKobo must be positive.");
+            if (string.IsNullOrWhiteSpace(idempotencyKey))
+                throw new ArgumentException("IdempotencyKey is required.", nameof(idempotencyKey));
+            if (string.IsNullOrWhiteSpace(requestPayloadHash))
+                throw new ArgumentException("RequestPayloadHash is required.", nameof(requestPayloadHash));
         }
 
         /// <summary>Schema completeness for a future reversal feature - not wired to any

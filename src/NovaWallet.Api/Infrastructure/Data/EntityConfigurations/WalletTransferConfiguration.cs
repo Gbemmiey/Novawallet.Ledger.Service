@@ -20,8 +20,24 @@ namespace NovaWallet.Api.Infrastructure.Data.EntityConfigurations
             builder.Property(t => t.Id)
                 .ValueGeneratedNever();
 
+            // Nullable: a Failed transfer never posts to the ledger. Postgres allows many
+            // NULLs under the unique index below.
             builder.Property(t => t.JournalEntryId)
+                .IsRequired(false);
+
+            builder.Property(t => t.IdempotencyKey)
+                .HasMaxLength(128)
                 .IsRequired();
+
+            builder.Property(t => t.RequestPayloadHash)
+                .HasMaxLength(64)
+                .IsRequired();
+
+            builder.Property(t => t.FailureCode)
+                .HasMaxLength(4);
+
+            builder.Property(t => t.FailureReason)
+                .HasMaxLength(500);
 
             builder.Property(t => t.SourceWalletId)
                 .IsRequired();
@@ -56,6 +72,10 @@ namespace NovaWallet.Api.Infrastructure.Data.EntityConfigurations
             builder.HasIndex(t => t.JournalEntryId)
                 .IsUnique();
 
+            // One row per Idempotency-Key, whether the transfer completed or failed.
+            builder.HasIndex(t => t.IdempotencyKey)
+                .IsUnique();
+
             // PaymentReference is the externally quotable reference for a transfer - an
             // independently system-generated UUID v7, decoupled from JournalEntryId -
             // indexed on its own since "look this transfer up by its reference" is a
@@ -66,6 +86,7 @@ namespace NovaWallet.Api.Infrastructure.Data.EntityConfigurations
             builder.HasOne(t => t.JournalEntry)
                 .WithMany()
                 .HasForeignKey(t => t.JournalEntryId)
+                .IsRequired(false)
                 .OnDelete(DeleteBehavior.Restrict);
 
             builder.HasOne(t => t.SourceWallet)

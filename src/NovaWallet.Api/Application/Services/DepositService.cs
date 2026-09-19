@@ -263,6 +263,48 @@ namespace NovaWallet.Api.Application.Services
             });
         }
 
+        /// <summary>
+        /// Reports where an inbound credit is in its lifecycle. The status comes from the
+        /// ExternalCreditRequest itself, which the DepositConsumer moves Pending -> Completed/Failed.
+        /// </summary>
+        public async Task<ServiceApiResponse<NipSingleCreditStatusResponse>> RequeryDeposit(string sessionId, CancellationToken cancellationToken)
+        {
+            if (string.IsNullOrWhiteSpace(sessionId) || sessionId.Length > 128)
+            {
+                return ServiceApiResponse<NipSingleCreditStatusResponse>.CreateFailure(
+                    ResponseCodes.InvalidEntryDetected.ResponseCode,
+                    "SessionId must be between 1 and 128 characters.");
+            }
+
+            var credit = await _novaWalletDbContext.ExternalCreditRequests
+                .AsNoTracking()
+                .FirstOrDefaultAsync(x => x.SessionId == sessionId, cancellationToken);
+
+            if (credit is null)
+            {
+                return ServiceApiResponse<NipSingleCreditStatusResponse>.CreateFailure(ResponseCodes.NoRecordReturned);
+            }
+
+            var responseCode = credit.Status switch
+            {
+                DepositStatus.Completed => NipResponseCodes.Approved,
+                DepositStatus.Failed => NipResponseCodes.SystemMalfunction,
+                _ => NipResponseCodes.InProgress
+            };
+
+            return ServiceApiResponse<NipSingleCreditStatusResponse>.CreateSuccess(new NipSingleCreditStatusResponse
+            {
+                SessionId = credit.SessionId,
+                TransactionReference = credit.TransactionReference,
+                AmountKobo = credit.AmountKobo,
+                BeneficiaryAccountNumber = credit.BeneficiaryAccountNumber,
+                Status = credit.Status.ToString(),
+                ResponseCode = responseCode,
+                CreatedAt = credit.CreatedAt,
+                CompletedDate = credit.CompletedDate
+            });
+        }
+
         private Task<ExternalCreditRequest?> FindBySessionId(string sessionId, CancellationToken cancellationToken)
         {
             return _novaWalletDbContext.ExternalCreditRequests

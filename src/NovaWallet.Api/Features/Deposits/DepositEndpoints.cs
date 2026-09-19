@@ -28,7 +28,27 @@ namespace NovaWallet.Api.Features.Deposits
                 .Produces<ServiceApiResponse<NipSingleCreditResponse>>(StatusCodes.Status202Accepted)
                 .WithValidation<NipSingleCreditRequest>();
 
+            // Requery: processing state of a previously submitted credit, by SessionId. Anonymous
+            // like the submit endpoint - it returns nothing beyond what that call already echoed.
+            group
+                .MapGet("/credit/{sessionId}", RequeryDeposit)
+                .WithName("RequeryDeposit")
+                .WithTags("Deposits")
+                .AllowAnonymous()
+                .RequireRateLimiting(NovaWalletConstants.RateLimitingConstants.CreditPolicy)
+                .Produces<ServiceApiResponse<NipSingleCreditStatusResponse>>(StatusCodes.Status200OK);
+
             return group;
+        }
+
+        private static async Task<IResult> RequeryDeposit(
+            string sessionId,
+            HttpContext httpContext,
+            IDepositService depositService,
+            CancellationToken cancellationToken)
+        {
+            var response = await depositService.RequeryDeposit(sessionId, cancellationToken);
+            return response.ToResult(httpContext);
         }
 
         /// <summary>
