@@ -1,0 +1,1174 @@
+{
+  "info": {
+    "_postman_id": "a23facfe-f528-4913-a74c-ca1a23d43c7e",
+    "name": "NovaWallet.Api v1.0",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_exporter_id": "37736774",
+    "_collection_link": "https://go.postman.co/collection/37736774-a23facfe-f528-4913-a74c-ca1a23d43c7e?source=collection_link"
+  },
+  "item": [
+    {
+      "name": "api",
+      "item": [
+        {
+          "name": "v1",
+          "item": [
+            {
+              "name": "admin",
+              "item": [
+                {
+                  "name": "audit-logs",
+                  "item": [
+                    {
+                      "name": "Get Audit Logs",
+                      "request": {
+                        "method": "GET",
+                        "header": [
+                          {
+                            "key": "Accept",
+                            "value": "application/json"
+                          }
+                        ],
+                        "url": {
+                          "raw": "{{baseUrl}}/api/v1/admin/audit-logs?walletId=01a0c3a0-21a2-76d6-93f9-cfe8cb84e3cd&pageNumber=1&pageSize=20",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "api",
+                            "v1",
+                            "admin",
+                            "audit-logs"
+                          ],
+                          "query": [
+                            {
+                              "key": "walletId",
+                              "value": "01a0c3a0-21a2-76d6-93f9-cfe8cb84e3cd"
+                            },
+                            {
+                              "key": "pageNumber",
+                              "value": "1"
+                            },
+                            {
+                              "key": "pageSize",
+                              "value": "20"
+                            }
+                          ]
+                        }
+                      },
+                      "response": [
+                        {
+                          "name": "OK",
+                          "originalRequest": {
+                            "method": "GET",
+                            "header": [
+                              {
+                                "key": "Accept",
+                                "value": "application/json"
+                              },
+                              {
+                                "description": "Added as a part of security scheme: bearer",
+                                "key": "Authorization",
+                                "value": "Bearer <token>"
+                              }
+                            ],
+                            "url": {
+                              "raw": "{{baseUrl}}/api/v1/admin/audit-logs?walletId=d5e698b7-a460-2acb-292c-5bfdc0569c28&pageNumber=1&pageSize=20",
+                              "host": [
+                                "{{baseUrl}}"
+                              ],
+                              "path": [
+                                "api",
+                                "v1",
+                                "admin",
+                                "audit-logs"
+                              ],
+                              "query": [
+                                {
+                                  "key": "walletId",
+                                  "value": "d5e698b7-a460-2acb-292c-5bfdc0569c28"
+                                },
+                                {
+                                  "key": "pageNumber",
+                                  "value": "1"
+                                },
+                                {
+                                  "key": "pageSize",
+                                  "value": "20"
+                                }
+                              ]
+                            }
+                          },
+                          "status": "OK",
+                          "code": 200,
+                          "_postman_previewlanguage": "json",
+                          "header": [
+                            {
+                              "key": "Content-Type",
+                              "value": "application/json"
+                            }
+                          ],
+                          "cookie": [],
+                          "body": "{\n  \"responseCode\": \"string\",\n  \"responseMessage\": \"string\",\n  \"errors\": [\n    {\n      \"propertyName\": \"string\",\n      \"error\": \"string\"\n    },\n    {\n      \"propertyName\": \"string\",\n      \"error\": \"string\"\n    }\n  ],\n  \"data\": {\n    \"items\": [\n      {\n        \"id\": \"cb38408f-c3e9-5d43-8c15-ef706a388514\",\n        \"walletId\": \"332b5d17-d8ce-92e0-3571-218c547d220d\",\n        \"actorSubject\": \"string\",\n        \"action\": \"string\",\n        \"balanceBeforeKobo\": 8516,\n        \"balanceAfterKobo\": 2095,\n        \"correlationId\": \"0a2d4564-2bf9-2219-8a7b-1c00bb18907c\",\n        \"createdAt\": \"1950-05-05T12:27:33.519Z\"\n      },\n      {\n        \"id\": \"06b9f324-7405-26a0-7d4c-8164b38ad1a7\",\n        \"walletId\": \"5978677f-558f-3733-b4c9-32fa02864eea\",\n        \"actorSubject\": \"string\",\n        \"action\": \"string\",\n        \"balanceBeforeKobo\": 6500,\n        \"balanceAfterKobo\": 827,\n        \"correlationId\": \"714cc915-e050-75d0-854b-96958f79475d\",\n        \"createdAt\": \"2008-07-12T20:45:02.392Z\"\n      }\n    ],\n    \"pageNumber\": 1876,\n    \"pageSize\": 8864,\n    \"totalPages\": 1496,\n    \"totalCount\": 738,\n    \"hasPreviousPage\": false,\n    \"hasNextPage\": false\n  }\n}"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "name": "wallets",
+                  "item": [
+                    {
+                      "name": "Modify Wallet",
+                      "item": [
+                        {
+                          "name": "status",
+                          "item": [
+                            {
+                              "name": "Update Wallet Status",
+                              "request": {
+                                "method": "PATCH",
+                                "header": [
+                                  {
+                                    "key": "Content-Type",
+                                    "value": "application/json"
+                                  },
+                                  {
+                                    "key": "Accept",
+                                    "value": "application/json"
+                                  }
+                                ],
+                                "body": {
+                                  "mode": "raw",
+                                  "raw": "{\n  \"status\": \"Active\"\n}",
+                                  "options": {
+                                    "raw": {
+                                      "language": "json"
+                                    }
+                                  }
+                                },
+                                "url": {
+                                  "raw": "{{baseUrl}}/api/v1/admin/wallets/:walletId/status",
+                                  "host": [
+                                    "{{baseUrl}}"
+                                  ],
+                                  "path": [
+                                    "api",
+                                    "v1",
+                                    "admin",
+                                    "wallets",
+                                    ":walletId",
+                                    "status"
+                                  ],
+                                  "variable": [
+                                    {
+                                      "key": "walletId",
+                                      "value": "01a0c3a0-21a2-76d6-93f9-cfe8cb84e3cd"
+                                    }
+                                  ]
+                                }
+                              },
+                              "response": [
+                                {
+                                  "name": "OK",
+                                  "originalRequest": {
+                                    "method": "PATCH",
+                                    "header": [
+                                      {
+                                        "key": "Content-Type",
+                                        "value": "application/json"
+                                      },
+                                      {
+                                        "key": "Accept",
+                                        "value": "application/json"
+                                      },
+                                      {
+                                        "description": "Added as a part of security scheme: bearer",
+                                        "key": "Authorization",
+                                        "value": "Bearer <token>"
+                                      }
+                                    ],
+                                    "body": {
+                                      "mode": "raw",
+                                      "raw": "{\n  \"status\": \"Active\"\n}",
+                                      "options": {
+                                        "raw": {
+                                          "headerFamily": "json",
+                                          "language": "json"
+                                        }
+                                      }
+                                    },
+                                    "url": {
+                                      "raw": "{{baseUrl}}/api/v1/admin/wallets/:walletId/status",
+                                      "host": [
+                                        "{{baseUrl}}"
+                                      ],
+                                      "path": [
+                                        "api",
+                                        "v1",
+                                        "admin",
+                                        "wallets",
+                                        ":walletId",
+                                        "status"
+                                      ],
+                                      "variable": [
+                                        {
+                                          "key": "walletId",
+                                          "value": "d5e698b7-a460-2acb-292c-5bfdc0569c28"
+                                        }
+                                      ]
+                                    }
+                                  },
+                                  "status": "OK",
+                                  "code": 200,
+                                  "_postman_previewlanguage": "json",
+                                  "header": [
+                                    {
+                                      "key": "Content-Type",
+                                      "value": "application/json"
+                                    }
+                                  ],
+                                  "cookie": [],
+                                  "body": "{\n  \"responseCode\": \"string\",\n  \"responseMessage\": \"string\",\n  \"errors\": [\n    {\n      \"propertyName\": \"string\",\n      \"error\": \"string\"\n    },\n    {\n      \"propertyName\": \"string\",\n      \"error\": \"string\"\n    }\n  ],\n  \"data\": {\n    \"walletId\": \"d639e823-c92b-8921-847e-0e8fdabd404d\",\n    \"currencyCode\": \"string\",\n    \"availableBalanceKobo\": 305,\n    \"accountNumber\": \"string\",\n    \"status\": \"Frozen\"\n  }\n}"
+                                },
+                                {
+                                  "name": "Bad Request",
+                                  "originalRequest": {
+                                    "method": "PATCH",
+                                    "header": [
+                                      {
+                                        "key": "Content-Type",
+                                        "value": "application/json"
+                                      },
+                                      {
+                                        "key": "Accept",
+                                        "value": "application/problem+json"
+                                      },
+                                      {
+                                        "description": "Added as a part of security scheme: bearer",
+                                        "key": "Authorization",
+                                        "value": "Bearer <token>"
+                                      }
+                                    ],
+                                    "body": {
+                                      "mode": "raw",
+                                      "raw": "{\n  \"status\": \"Active\"\n}",
+                                      "options": {
+                                        "raw": {
+                                          "headerFamily": "json",
+                                          "language": "json"
+                                        }
+                                      }
+                                    },
+                                    "url": {
+                                      "raw": "{{baseUrl}}/api/v1/admin/wallets/:walletId/status",
+                                      "host": [
+                                        "{{baseUrl}}"
+                                      ],
+                                      "path": [
+                                        "api",
+                                        "v1",
+                                        "admin",
+                                        "wallets",
+                                        ":walletId",
+                                        "status"
+                                      ],
+                                      "variable": [
+                                        {
+                                          "key": "walletId",
+                                          "value": "d5e698b7-a460-2acb-292c-5bfdc0569c28"
+                                        }
+                                      ]
+                                    }
+                                  },
+                                  "status": "Bad Request",
+                                  "code": 400,
+                                  "_postman_previewlanguage": "json",
+                                  "header": [
+                                    {
+                                      "key": "Content-Type",
+                                      "value": "application/problem+json"
+                                    }
+                                  ],
+                                  "cookie": [],
+                                  "body": "{\n  \"type\": \"string\",\n  \"title\": \"string\",\n  \"status\": 673,\n  \"detail\": \"string\",\n  \"instance\": \"string\",\n  \"errors\": {\n    \"key_0\": [\n      \"string\",\n      \"string\"\n    ],\n    \"key_1\": [\n      \"string\",\n      \"string\"\n    ],\n    \"key_2\": [\n      \"string\",\n      \"string\"\n    ],\n    \"key_3\": [\n      \"string\",\n      \"string\"\n    ]\n  }\n}"
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "name": "auth",
+              "item": [
+                {
+                  "name": "login",
+                  "item": [
+                    {
+                      "name": "/api/v1/auth/login",
+                      "event": [
+                        {
+                          "listen": "test",
+                          "script": {
+                            "type": "text/javascript",
+                            "exec": [
+                              "// Parse the JSON response body\r\nconst json = pm.response.json();\r\n\r\n// Extract the value you want to set as a global variable\r\nconst token = json.data.accessToken; // Replace 'key' with the actual key in the JSON response\r\n\r\n// Set the global variable\r\npm.collectionVariables.set('bearerToken', token); "
+                            ]
+                          }
+                        }
+                      ],
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          },
+                          {
+                            "key": "Accept",
+                            "value": "application/problem+json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"userId\": \"01a0c3af-725e-7378-89e6-3fefaf35a4b7\",\n  \"role\": \"Customer\"\n}",
+                          "options": {
+                            "raw": {
+                              "language": "json"
+                            }
+                          }
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/api/v1/auth/login",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "api",
+                            "v1",
+                            "auth",
+                            "login"
+                          ]
+                        }
+                      },
+                      "response": [
+                        {
+                          "name": "Bad Request",
+                          "originalRequest": {
+                            "method": "POST",
+                            "header": [
+                              {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                              },
+                              {
+                                "key": "Accept",
+                                "value": "application/problem+json"
+                              },
+                              {
+                                "description": "Added as a part of security scheme: bearer",
+                                "key": "Authorization",
+                                "value": "Bearer <token>"
+                              }
+                            ],
+                            "body": {
+                              "mode": "raw",
+                              "raw": "{\n  \"userId\": \"db6d0d00-61b7-f5af-40aa-6acde64c2012\",\n  \"role\": \"Customer\"\n}",
+                              "options": {
+                                "raw": {
+                                  "headerFamily": "json",
+                                  "language": "json"
+                                }
+                              }
+                            },
+                            "url": {
+                              "raw": "{{baseUrl}}/api/v1/auth/login",
+                              "host": [
+                                "{{baseUrl}}"
+                              ],
+                              "path": [
+                                "api",
+                                "v1",
+                                "auth",
+                                "login"
+                              ]
+                            }
+                          },
+                          "status": "Bad Request",
+                          "code": 400,
+                          "_postman_previewlanguage": "json",
+                          "header": [
+                            {
+                              "key": "Content-Type",
+                              "value": "application/problem+json"
+                            }
+                          ],
+                          "cookie": [],
+                          "body": "{\n  \"type\": \"string\",\n  \"title\": \"string\",\n  \"status\": 673,\n  \"detail\": \"string\",\n  \"instance\": \"string\",\n  \"errors\": {\n    \"key_0\": [\n      \"string\",\n      \"string\"\n    ],\n    \"key_1\": [\n      \"string\",\n      \"string\"\n    ],\n    \"key_2\": [\n      \"string\",\n      \"string\"\n    ],\n    \"key_3\": [\n      \"string\",\n      \"string\"\n    ]\n  }\n}"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "name": "wallets",
+              "item": [
+                {
+                  "name": "credit",
+                  "item": [
+                    {
+                      "name": "Requery",
+                      "item": [
+                        {
+                          "name": "Requery Deposit",
+                          "request": {
+                            "method": "GET",
+                            "header": [
+                              {
+                                "key": "Accept",
+                                "value": "application/json"
+                              }
+                            ],
+                            "url": {
+                              "raw": "{{baseUrl}}/api/v1/wallets/credit/:sessionId",
+                              "host": [
+                                "{{baseUrl}}"
+                              ],
+                              "path": [
+                                "api",
+                                "v1",
+                                "wallets",
+                                "credit",
+                                ":sessionId"
+                              ],
+                              "variable": [
+                                {
+                                  "key": "sessionId",
+                                  "value": "01a0c3a1083b778f9c6b5afffb6025"
+                                }
+                              ]
+                            }
+                          },
+                          "response": [
+                            {
+                              "name": "OK",
+                              "originalRequest": {
+                                "method": "GET",
+                                "header": [
+                                  {
+                                    "key": "Accept",
+                                    "value": "application/json"
+                                  },
+                                  {
+                                    "description": "Added as a part of security scheme: bearer",
+                                    "key": "Authorization",
+                                    "value": "Bearer <token>"
+                                  }
+                                ],
+                                "url": {
+                                  "raw": "{{baseUrl}}/api/v1/wallets/credit/:sessionId",
+                                  "host": [
+                                    "{{baseUrl}}"
+                                  ],
+                                  "path": [
+                                    "api",
+                                    "v1",
+                                    "wallets",
+                                    "credit",
+                                    ":sessionId"
+                                  ],
+                                  "variable": [
+                                    {
+                                      "key": "sessionId",
+                                      "value": "string"
+                                    }
+                                  ]
+                                }
+                              },
+                              "status": "OK",
+                              "code": 200,
+                              "_postman_previewlanguage": "json",
+                              "header": [
+                                {
+                                  "key": "Content-Type",
+                                  "value": "application/json"
+                                }
+                              ],
+                              "cookie": [],
+                              "body": "{\n  \"responseCode\": \"string\",\n  \"responseMessage\": \"string\",\n  \"errors\": [\n    {\n      \"propertyName\": \"string\",\n      \"error\": \"string\"\n    },\n    {\n      \"propertyName\": \"string\",\n      \"error\": \"string\"\n    }\n  ],\n  \"data\": {\n    \"sessionId\": \"string\",\n    \"transactionReference\": \"string\",\n    \"amountKobo\": 419,\n    \"beneficiaryAccountNumber\": \"string\",\n    \"status\": \"string\",\n    \"responseCode\": \"string\",\n    \"createdAt\": \"1949-06-24T18:02:11.509Z\",\n    \"completedDate\": \"1971-11-13T05:51:03.786Z\"\n  }\n}"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "name": "Submit Deposit",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          },
+                          {
+                            "key": "Accept",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"sessionId\": \"01a0c3a1083b778f9c6b5afffb6026\",\n  \"transactionReference\": \"01a0c3b2-2a60-7219-9338-406e68f6077f\",\n  \"amountKobo\": 200023,\n  \"beneficiaryAccountNumber\": \"4361589300\",\n  \"originatingAccountNumber\": \"310077132\",\n  \"originatingBankCode\": \"000016\",\n  \"narration\": \"Test Credit 3\"\n}",
+                          "options": {
+                            "raw": {
+                              "language": "json"
+                            }
+                          }
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/api/v1/wallets/credit",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "api",
+                            "v1",
+                            "wallets",
+                            "credit"
+                          ]
+                        }
+                      },
+                      "response": [
+                        {
+                          "name": "Accepted",
+                          "originalRequest": {
+                            "method": "POST",
+                            "header": [
+                              {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                              },
+                              {
+                                "key": "Accept",
+                                "value": "application/json"
+                              },
+                              {
+                                "description": "Added as a part of security scheme: bearer",
+                                "key": "Authorization",
+                                "value": "Bearer <token>"
+                              }
+                            ],
+                            "body": {
+                              "mode": "raw",
+                              "raw": "{\n  \"sessionId\": \"string\",\n  \"transactionReference\": \"string\",\n  \"amountKobo\": 4023,\n  \"beneficiaryAccountNumber\": \"string\",\n  \"originatingAccountNumber\": \"string\",\n  \"originatingBankCode\": \"string\",\n  \"narration\": \"string\"\n}",
+                              "options": {
+                                "raw": {
+                                  "headerFamily": "json",
+                                  "language": "json"
+                                }
+                              }
+                            },
+                            "url": {
+                              "raw": "{{baseUrl}}/api/v1/wallets/credit",
+                              "host": [
+                                "{{baseUrl}}"
+                              ],
+                              "path": [
+                                "api",
+                                "v1",
+                                "wallets",
+                                "credit"
+                              ]
+                            }
+                          },
+                          "status": "Accepted",
+                          "code": 202,
+                          "_postman_previewlanguage": "json",
+                          "header": [
+                            {
+                              "key": "Content-Type",
+                              "value": "application/json"
+                            }
+                          ],
+                          "cookie": [],
+                          "body": "{\n  \"responseCode\": \"string\",\n  \"responseMessage\": \"string\",\n  \"errors\": [\n    {\n      \"propertyName\": \"string\",\n      \"error\": \"string\"\n    },\n    {\n      \"propertyName\": \"string\",\n      \"error\": \"string\"\n    }\n  ],\n  \"data\": {\n    \"sessionId\": \"string\",\n    \"transactionReference\": \"string\",\n    \"amountKobo\": 1297,\n    \"beneficiaryAccountNumber\": \"string\",\n    \"originatingAccountNumber\": \"string\",\n    \"narration\": \"string\",\n    \"originatingBankCode\": \"string\"\n  }\n}"
+                        },
+                        {
+                          "name": "Bad Request",
+                          "originalRequest": {
+                            "method": "POST",
+                            "header": [
+                              {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                              },
+                              {
+                                "key": "Accept",
+                                "value": "application/problem+json"
+                              },
+                              {
+                                "description": "Added as a part of security scheme: bearer",
+                                "key": "Authorization",
+                                "value": "Bearer <token>"
+                              }
+                            ],
+                            "body": {
+                              "mode": "raw",
+                              "raw": "{\n  \"sessionId\": \"string\",\n  \"transactionReference\": \"string\",\n  \"amountKobo\": 4023,\n  \"beneficiaryAccountNumber\": \"string\",\n  \"originatingAccountNumber\": \"string\",\n  \"originatingBankCode\": \"string\",\n  \"narration\": \"string\"\n}",
+                              "options": {
+                                "raw": {
+                                  "headerFamily": "json",
+                                  "language": "json"
+                                }
+                              }
+                            },
+                            "url": {
+                              "raw": "{{baseUrl}}/api/v1/wallets/credit",
+                              "host": [
+                                "{{baseUrl}}"
+                              ],
+                              "path": [
+                                "api",
+                                "v1",
+                                "wallets",
+                                "credit"
+                              ]
+                            }
+                          },
+                          "status": "Bad Request",
+                          "code": 400,
+                          "_postman_previewlanguage": "json",
+                          "header": [
+                            {
+                              "key": "Content-Type",
+                              "value": "application/problem+json"
+                            }
+                          ],
+                          "cookie": [],
+                          "body": "{\n  \"type\": \"string\",\n  \"title\": \"string\",\n  \"status\": 673,\n  \"detail\": \"string\",\n  \"instance\": \"string\",\n  \"errors\": {\n    \"key_0\": [\n      \"string\",\n      \"string\"\n    ],\n    \"key_1\": [\n      \"string\",\n      \"string\"\n    ],\n    \"key_2\": [\n      \"string\",\n      \"string\"\n    ],\n    \"key_3\": [\n      \"string\",\n      \"string\"\n    ]\n  }\n}"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "name": "transfer",
+                  "item": [
+                    {
+                      "name": "Requery",
+                      "item": [
+                        {
+                          "name": "Requery Transfer",
+                          "request": {
+                            "method": "GET",
+                            "header": [
+                              {
+                                "key": "Accept",
+                                "value": "application/json"
+                              }
+                            ],
+                            "url": {
+                              "raw": "{{baseUrl}}/api/v1/wallets/transfer/:idempotencyKey",
+                              "host": [
+                                "{{baseUrl}}"
+                              ],
+                              "path": [
+                                "api",
+                                "v1",
+                                "wallets",
+                                "transfer",
+                                ":idempotencyKey"
+                              ],
+                              "variable": [
+                                {
+                                  "key": "idempotencyKey",
+                                  "value": "01a0c3b4-88ec-73ee-9168-4e3297f1e553"
+                                }
+                              ]
+                            }
+                          },
+                          "response": [
+                            {
+                              "name": "OK",
+                              "originalRequest": {
+                                "method": "GET",
+                                "header": [
+                                  {
+                                    "key": "Accept",
+                                    "value": "application/json"
+                                  },
+                                  {
+                                    "description": "Added as a part of security scheme: bearer",
+                                    "key": "Authorization",
+                                    "value": "Bearer <token>"
+                                  }
+                                ],
+                                "url": {
+                                  "raw": "{{baseUrl}}/api/v1/wallets/transfer/:idempotencyKey",
+                                  "host": [
+                                    "{{baseUrl}}"
+                                  ],
+                                  "path": [
+                                    "api",
+                                    "v1",
+                                    "wallets",
+                                    "transfer",
+                                    ":idempotencyKey"
+                                  ],
+                                  "variable": [
+                                    {
+                                      "key": "idempotencyKey",
+                                      "value": "string"
+                                    }
+                                  ]
+                                }
+                              },
+                              "status": "OK",
+                              "code": 200,
+                              "_postman_previewlanguage": "json",
+                              "header": [
+                                {
+                                  "key": "Content-Type",
+                                  "value": "application/json"
+                                }
+                              ],
+                              "cookie": [],
+                              "body": "{\n  \"responseCode\": \"string\",\n  \"responseMessage\": \"string\",\n  \"errors\": [\n    {\n      \"propertyName\": \"string\",\n      \"error\": \"string\"\n    },\n    {\n      \"propertyName\": \"string\",\n      \"error\": \"string\"\n    }\n  ],\n  \"data\": {\n    \"idempotencyKey\": \"string\",\n    \"status\": \"string\",\n    \"responseCode\": \"string\",\n    \"failureReason\": \"string\",\n    \"paymentReference\": \"string\",\n    \"sourceWalletId\": \"string\",\n    \"destinationWalletId\": \"string\",\n    \"amountInKobo\": 9394,\n    \"narration\": \"string\",\n    \"transactionDate\": \"2001-12-30T21:37:50.078Z\"\n  }\n}"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "name": "Submit Transfer",
+                      "request": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Idempotency-Key",
+                            "value": "01a0c3b4-88ec-73ee-9168-4e3297f1e553",
+                            "description": "Client-supplied idempotency token for this transfer. Replaying the same key with an identical payload returns the original result unchanged; reusing the same key with a different payload is rejected with 409 Conflict. Maximum length 128 characters."
+                          },
+                          {
+                            "key": "Content-Type",
+                            "value": "application/json"
+                          },
+                          {
+                            "key": "Accept",
+                            "value": "application/json"
+                          }
+                        ],
+                        "body": {
+                          "mode": "raw",
+                          "raw": "{\n  \"destinationWalletId\": \"01a0c3a0-21a2-76d6-93f9-cfe8cb84e3cd\",\n  \"amountInKobo\": 3312,\n  \"narration\": \"Test Transfer\"\n}",
+                          "options": {
+                            "raw": {
+                              "language": "json"
+                            }
+                          }
+                        },
+                        "url": {
+                          "raw": "{{baseUrl}}/api/v1/wallets/transfer",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "api",
+                            "v1",
+                            "wallets",
+                            "transfer"
+                          ]
+                        }
+                      },
+                      "response": [
+                        {
+                          "name": "OK",
+                          "originalRequest": {
+                            "method": "POST",
+                            "header": [
+                              {
+                                "description": "Client-supplied idempotency token for this transfer. Replaying the same key with an identical payload returns the original result unchanged; reusing the same key with a different payload is rejected with 409 Conflict. Maximum length 128 characters.",
+                                "key": "Idempotency-Key",
+                                "value": "string"
+                              },
+                              {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                              },
+                              {
+                                "key": "Accept",
+                                "value": "application/json"
+                              },
+                              {
+                                "description": "Added as a part of security scheme: bearer",
+                                "key": "Authorization",
+                                "value": "Bearer <token>"
+                              }
+                            ],
+                            "body": {
+                              "mode": "raw",
+                              "raw": "{\n  \"sourceWalletId\": \"string\",\n  \"destinationWalletId\": \"string\",\n  \"amountInKobo\": 3312,\n  \"narration\": \"string\"\n}",
+                              "options": {
+                                "raw": {
+                                  "headerFamily": "json",
+                                  "language": "json"
+                                }
+                              }
+                            },
+                            "url": {
+                              "raw": "{{baseUrl}}/api/v1/wallets/transfer",
+                              "host": [
+                                "{{baseUrl}}"
+                              ],
+                              "path": [
+                                "api",
+                                "v1",
+                                "wallets",
+                                "transfer"
+                              ]
+                            }
+                          },
+                          "status": "OK",
+                          "code": 200,
+                          "_postman_previewlanguage": "json",
+                          "header": [
+                            {
+                              "key": "Content-Type",
+                              "value": "application/json"
+                            }
+                          ],
+                          "cookie": [],
+                          "body": "{\n  \"responseCode\": \"string\",\n  \"responseMessage\": \"string\",\n  \"errors\": [\n    {\n      \"propertyName\": \"string\",\n      \"error\": \"string\"\n    },\n    {\n      \"propertyName\": \"string\",\n      \"error\": \"string\"\n    }\n  ],\n  \"data\": {\n    \"sourceWalletId\": \"string\",\n    \"destinationWalletId\": \"string\",\n    \"amountInKobo\": 5096,\n    \"narration\": \"string\",\n    \"transactionDate\": \"1955-02-13T06:19:04.734Z\",\n    \"paymentReference\": \"string\"\n  }\n}"
+                        },
+                        {
+                          "name": "Bad Request",
+                          "originalRequest": {
+                            "method": "POST",
+                            "header": [
+                              {
+                                "description": "Client-supplied idempotency token for this transfer. Replaying the same key with an identical payload returns the original result unchanged; reusing the same key with a different payload is rejected with 409 Conflict. Maximum length 128 characters.",
+                                "key": "Idempotency-Key",
+                                "value": "string"
+                              },
+                              {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                              },
+                              {
+                                "key": "Accept",
+                                "value": "application/problem+json"
+                              },
+                              {
+                                "description": "Added as a part of security scheme: bearer",
+                                "key": "Authorization",
+                                "value": "Bearer <token>"
+                              }
+                            ],
+                            "body": {
+                              "mode": "raw",
+                              "raw": "{\n  \"sourceWalletId\": \"string\",\n  \"destinationWalletId\": \"string\",\n  \"amountInKobo\": 3312,\n  \"narration\": \"string\"\n}",
+                              "options": {
+                                "raw": {
+                                  "headerFamily": "json",
+                                  "language": "json"
+                                }
+                              }
+                            },
+                            "url": {
+                              "raw": "{{baseUrl}}/api/v1/wallets/transfer",
+                              "host": [
+                                "{{baseUrl}}"
+                              ],
+                              "path": [
+                                "api",
+                                "v1",
+                                "wallets",
+                                "transfer"
+                              ]
+                            }
+                          },
+                          "status": "Bad Request",
+                          "code": 400,
+                          "_postman_previewlanguage": "json",
+                          "header": [
+                            {
+                              "key": "Content-Type",
+                              "value": "application/problem+json"
+                            }
+                          ],
+                          "cookie": [],
+                          "body": "{\n  \"type\": \"string\",\n  \"title\": \"string\",\n  \"status\": 673,\n  \"detail\": \"string\",\n  \"instance\": \"string\",\n  \"errors\": {\n    \"key_0\": [\n      \"string\",\n      \"string\"\n    ],\n    \"key_1\": [\n      \"string\",\n      \"string\"\n    ],\n    \"key_2\": [\n      \"string\",\n      \"string\"\n    ],\n    \"key_3\": [\n      \"string\",\n      \"string\"\n    ]\n  }\n}"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "name": "statement",
+                  "item": [
+                    {
+                      "name": "Get Wallet Statement",
+                      "request": {
+                        "method": "GET",
+                        "header": [
+                          {
+                            "key": "Accept",
+                            "value": "application/json"
+                          }
+                        ],
+                        "url": {
+                          "raw": "{{baseUrl}}/api/v1/wallets/statement?pageNumber=1&pageSize=20&fromDate=2010-04-01T03:39:01.270Z&toDate=2026-12-30T03:39:01.270Z",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "api",
+                            "v1",
+                            "wallets",
+                            "statement"
+                          ],
+                          "query": [
+                            {
+                              "key": "pageNumber",
+                              "value": "1"
+                            },
+                            {
+                              "key": "pageSize",
+                              "value": "20"
+                            },
+                            {
+                              "key": "fromDate",
+                              "value": "2010-04-01T03:39:01.270Z"
+                            },
+                            {
+                              "key": "toDate",
+                              "value": "2026-12-30T03:39:01.270Z"
+                            }
+                          ]
+                        }
+                      },
+                      "response": [
+                        {
+                          "name": "OK",
+                          "originalRequest": {
+                            "method": "GET",
+                            "header": [
+                              {
+                                "key": "Accept",
+                                "value": "application/json"
+                              },
+                              {
+                                "description": "Added as a part of security scheme: bearer",
+                                "key": "Authorization",
+                                "value": "Bearer <token>"
+                              }
+                            ],
+                            "url": {
+                              "raw": "{{baseUrl}}/api/v1/wallets/statement?pageNumber=1&pageSize=20&fromDate=2010-04-01T03:39:01.270Z&toDate=2010-04-01T03:39:01.270Z",
+                              "host": [
+                                "{{baseUrl}}"
+                              ],
+                              "path": [
+                                "api",
+                                "v1",
+                                "wallets",
+                                "statement"
+                              ],
+                              "query": [
+                                {
+                                  "key": "pageNumber",
+                                  "value": "1"
+                                },
+                                {
+                                  "key": "pageSize",
+                                  "value": "20"
+                                },
+                                {
+                                  "key": "fromDate",
+                                  "value": "2010-04-01T03:39:01.270Z"
+                                },
+                                {
+                                  "key": "toDate",
+                                  "value": "2010-04-01T03:39:01.270Z"
+                                }
+                              ]
+                            }
+                          },
+                          "status": "OK",
+                          "code": 200,
+                          "_postman_previewlanguage": "json",
+                          "header": [
+                            {
+                              "key": "Content-Type",
+                              "value": "application/json"
+                            }
+                          ],
+                          "cookie": [],
+                          "body": "{\n  \"responseCode\": \"string\",\n  \"responseMessage\": \"string\",\n  \"errors\": [\n    {\n      \"propertyName\": \"string\",\n      \"error\": \"string\"\n    },\n    {\n      \"propertyName\": \"string\",\n      \"error\": \"string\"\n    }\n  ],\n  \"data\": {\n    \"items\": [\n      {\n        \"id\": \"b3f12da7-d46b-7da9-d363-6f12a8a71f30\",\n        \"amountKobo\": 575,\n        \"entryType\": \"Credit\",\n        \"transParticulars\": \"string\",\n        \"createdAt\": \"2024-10-25T18:20:24.474Z\"\n      },\n      {\n        \"id\": \"69fd3196-52f5-fbe5-265a-695df9a1023a\",\n        \"amountKobo\": 6537,\n        \"entryType\": \"Credit\",\n        \"transParticulars\": \"string\",\n        \"createdAt\": \"1983-03-29T08:09:07.873Z\"\n      }\n    ],\n    \"pageNumber\": 7856,\n    \"pageSize\": 8661,\n    \"totalPages\": 9073,\n    \"totalCount\": 5970,\n    \"hasPreviousPage\": true,\n    \"hasNextPage\": true\n  }\n}"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "name": "Create Wallet",
+                  "request": {
+                    "method": "POST",
+                    "header": [
+                      {
+                        "key": "Accept",
+                        "value": "application/json"
+                      }
+                    ],
+                    "url": {
+                      "raw": "{{baseUrl}}/api/v1/wallets",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "api",
+                        "v1",
+                        "wallets"
+                      ]
+                    }
+                  },
+                  "response": [
+                    {
+                      "name": "OK",
+                      "originalRequest": {
+                        "method": "POST",
+                        "header": [
+                          {
+                            "key": "Accept",
+                            "value": "application/json"
+                          },
+                          {
+                            "description": "Added as a part of security scheme: bearer",
+                            "key": "Authorization",
+                            "value": "Bearer <token>"
+                          }
+                        ],
+                        "url": {
+                          "raw": "{{baseUrl}}/api/v1/wallets",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "api",
+                            "v1",
+                            "wallets"
+                          ]
+                        }
+                      },
+                      "status": "OK",
+                      "code": 200,
+                      "_postman_previewlanguage": "json",
+                      "header": [
+                        {
+                          "key": "Content-Type",
+                          "value": "application/json"
+                        }
+                      ],
+                      "cookie": [],
+                      "body": "{\n  \"responseCode\": \"string\",\n  \"responseMessage\": \"string\",\n  \"errors\": [\n    {\n      \"propertyName\": \"string\",\n      \"error\": \"string\"\n    },\n    {\n      \"propertyName\": \"string\",\n      \"error\": \"string\"\n    }\n  ],\n  \"data\": {\n    \"walletId\": \"d639e823-c92b-8921-847e-0e8fdabd404d\",\n    \"currencyCode\": \"string\",\n    \"availableBalanceKobo\": 305,\n    \"accountNumber\": \"string\",\n    \"status\": \"Frozen\"\n  }\n}"
+                    }
+                  ]
+                },
+                {
+                  "name": "Retrieve Wallet Details",
+                  "request": {
+                    "method": "GET",
+                    "header": [
+                      {
+                        "key": "Accept",
+                        "value": "application/json"
+                      }
+                    ],
+                    "url": {
+                      "raw": "{{baseUrl}}/api/v1/wallets",
+                      "host": [
+                        "{{baseUrl}}"
+                      ],
+                      "path": [
+                        "api",
+                        "v1",
+                        "wallets"
+                      ]
+                    }
+                  },
+                  "response": [
+                    {
+                      "name": "OK",
+                      "originalRequest": {
+                        "method": "GET",
+                        "header": [
+                          {
+                            "key": "Accept",
+                            "value": "application/json"
+                          },
+                          {
+                            "description": "Added as a part of security scheme: bearer",
+                            "key": "Authorization",
+                            "value": "Bearer <token>"
+                          }
+                        ],
+                        "url": {
+                          "raw": "{{baseUrl}}/api/v1/wallets",
+                          "host": [
+                            "{{baseUrl}}"
+                          ],
+                          "path": [
+                            "api",
+                            "v1",
+                            "wallets"
+                          ]
+                        }
+                      },
+                      "status": "OK",
+                      "code": 200,
+                      "_postman_previewlanguage": "json",
+                      "header": [
+                        {
+                          "key": "Content-Type",
+                          "value": "application/json"
+                        }
+                      ],
+                      "cookie": [],
+                      "body": "{\n  \"responseCode\": \"string\",\n  \"responseMessage\": \"string\",\n  \"errors\": [\n    {\n      \"propertyName\": \"string\",\n      \"error\": \"string\"\n    },\n    {\n      \"propertyName\": \"string\",\n      \"error\": \"string\"\n    }\n  ],\n  \"data\": {\n    \"walletId\": \"d639e823-c92b-8921-847e-0e8fdabd404d\",\n    \"currencyCode\": \"string\",\n    \"availableBalanceKobo\": 305,\n    \"accountNumber\": \"string\",\n    \"status\": \"Frozen\"\n  }\n}"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{bearerToken}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "/"
+    },
+    {
+      "key": "bearerToken",
+      "value": ""
+    }
+  ]
+}
