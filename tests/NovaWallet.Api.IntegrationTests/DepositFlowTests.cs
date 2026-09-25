@@ -1,8 +1,8 @@
 using Microsoft.EntityFrameworkCore;
-using NovaWallet.Api.Core.Configuration;
-using NovaWallet.Api.Core.Enums;
-using NovaWallet.Api.Core.Models;
 using NovaWallet.Api.IntegrationTests.Infrastructure;
+using NovaWallet.Application.Configuration;
+using NovaWallet.Domain.Entities;
+using NovaWallet.Domain.Enums;
 using System.Net;
 using System.Net.Http.Json;
 

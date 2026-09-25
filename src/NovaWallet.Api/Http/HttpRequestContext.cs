@@ -1,5 +1,5 @@
-﻿using NovaWallet.Api.Core.Services;
-using NovaWallet.Api.Infrastructure.Http;
+﻿using NovaWallet.Application.Abstractions;
+using NovaWallet.Infrastructure.Http;
 
 namespace NovaWallet.Api.Http
 {

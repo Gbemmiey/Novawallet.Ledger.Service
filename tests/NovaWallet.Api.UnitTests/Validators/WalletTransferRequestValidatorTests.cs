@@ -1,5 +1,5 @@
-using NovaWallet.Api.Core.Dto.Login;
-using NovaWallet.Api.Core.Validators;
+using NovaWallet.Application.Dto.Login;
+using NovaWallet.Application.Validators;
 
 namespace NovaWallet.Api.UnitTests.Validators;
 

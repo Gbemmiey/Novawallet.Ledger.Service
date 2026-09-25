@@ -10,6 +10,9 @@
     <File Path="README.md" />
   </Folder>
   <Folder Name="/src/">
+    <Project Path="src/NovaWallet.Domain/NovaWallet.Domain.csproj" />
+    <Project Path="src/NovaWallet.Application/NovaWallet.Application.csproj" />
+    <Project Path="src/NovaWallet.Infrastructure/NovaWallet.Infrastructure.csproj" />
     <Project Path="src/NovaWallet.Api/NovaWallet.Api.csproj" Id="30f4e7c4-922f-48c5-aeaf-2cd07d858123" />
   </Folder>
   <Folder Name="/tests/">

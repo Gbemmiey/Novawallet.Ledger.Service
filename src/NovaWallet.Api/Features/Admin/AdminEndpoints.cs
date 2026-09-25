@@ -1,9 +1,9 @@
-using NovaWallet.Api.Core.Dto;
-using NovaWallet.Api.Core.Dto.Login;
-using NovaWallet.Api.Core.Models.Response;
-using NovaWallet.Api.Core.Services;
-using NovaWallet.Api.Infrastructure.Http;
-using static NovaWallet.Api.Core.Configuration.NovaWalletConstants;
+using NovaWallet.Application.Abstractions;
+using NovaWallet.Application.Dto;
+using NovaWallet.Application.Dto.Login;
+using NovaWallet.Application.Response;
+using NovaWallet.Infrastructure.Http;
+using static NovaWallet.Application.Configuration.NovaWalletConstants;
 
 namespace NovaWallet.Api.Features.Admin
 {

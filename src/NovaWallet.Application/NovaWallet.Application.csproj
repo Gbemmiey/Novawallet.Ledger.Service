@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>NovaWallet.Application</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Gives this class library access to the shared-framework's IServiceCollection,
+         IOptions<T>, IConfiguration, ILogger<T>, etc. - the SAME physical assemblies that
+         NovaWallet.Infrastructure and NovaWallet.Api resolve them from. Using a plain
+         PackageReference for these (as before) resolves a different, NuGet-restored copy
+         of the same-named types, which the compiler treats as unrelated types across
+         project boundaries ("cannot convert IServiceCollection to IServiceCollection"). -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Validation -->
+    <PackageReference Include="FluentValidation" />
+    <PackageReference Include="FluentValidation.DependencyInjectionExtensions" />
+
+    <!-- EF Core abstractions only (DbSet<T>/DatabaseFacade/execution-strategy types) -
+         no Npgsql/Relational-provider package here. Application depends on the shape of
+         the database, never on Postgres specifically; that binding happens only in
+         NovaWallet.Infrastructure, which supplies the concrete DbContext. -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore" />
+    <!-- Relational-but-provider-neutral extensions: CreateExecutionStrategy, BeginTransactionAsync,
+         ExecuteSqlInterpolatedAsync, SqlQuery<T>. Works against any relational EF provider; still
+         carries no Npgsql/Postgres dependency. -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" />
+    <PackageReference Include="Microsoft.Extensions.Caching.Abstractions" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\NovaWallet.Domain\NovaWallet.Domain.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,8 +1,8 @@
 using Microsoft.Extensions.Options;
-using NovaWallet.Api.Core.Configuration;
-using NovaWallet.Api.Core.Dto.Login;
-using NovaWallet.Api.Core.Enums;
-using NovaWallet.Api.Infrastructure.Providers;
+using NovaWallet.Application.Configuration;
+using NovaWallet.Application.Dto.Login;
+using NovaWallet.Domain.Enums;
+using NovaWallet.Infrastructure.Providers;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 

@@ -1,7 +1,7 @@
-using NovaWallet.Api.Core.Dto;
-using NovaWallet.Api.Core.Dto.Login;
-using NovaWallet.Api.Core.Enums;
-using NovaWallet.Api.Core.Validators;
+using NovaWallet.Application.Dto;
+using NovaWallet.Application.Dto.Login;
+using NovaWallet.Application.Validators;
+using NovaWallet.Domain.Enums;
 
 namespace NovaWallet.Api.UnitTests.Validators;
 

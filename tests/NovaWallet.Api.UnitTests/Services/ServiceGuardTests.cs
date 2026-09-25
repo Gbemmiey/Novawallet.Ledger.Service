@@ -2,11 +2,11 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Hybrid;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
-using NovaWallet.Api.Application.Services;
-using NovaWallet.Api.Core.Dto.Login;
-using NovaWallet.Api.Core.Services;
-using NovaWallet.Api.Infrastructure.Data;
-using NovaWallet.Api.Infrastructure.Extensions.OpenTelemetry;
+using NovaWallet.Application.Abstractions;
+using NovaWallet.Application.Dto.Login;
+using NovaWallet.Application.Observability;
+using NovaWallet.Application.Services;
+using NovaWallet.Infrastructure.Data;
 
 namespace NovaWallet.Api.UnitTests.Services;
 
@@ -25,9 +25,10 @@ public sealed class TransferServiceGuardTests : IDisposable
 
     private readonly NovaWalletMetrics _metrics = new();
     private readonly Mock<IRequestContext> _requestContext = new();
+    private readonly IUniqueConstraintViolationDetector _violationDetector = new NpgsqlUniqueConstraintViolationDetector();
 
     private TransferService NewService() =>
-        new(NullLogger<TransferService>.Instance, _dbContext, _requestContext.Object, _metrics);
+        new(NullLogger<TransferService>.Instance, _dbContext, _requestContext.Object, _metrics, _violationDetector);
 
     private void SignedInAs(Guid? userId, string? idempotencyKey)
     {
@@ -164,9 +165,10 @@ public sealed class DepositServiceGuardTests : IDisposable
             .Options);
 
     private readonly NovaWalletMetrics _metrics = new();
+    private readonly IUniqueConstraintViolationDetector _violationDetector = new NpgsqlUniqueConstraintViolationDetector();
 
     private DepositService NewService() =>
-        new(NullLogger<DepositService>.Instance, _dbContext, Mock.Of<HybridCache>(), _metrics);
+        new(NullLogger<DepositService>.Instance, _dbContext, Mock.Of<HybridCache>(), _metrics, _violationDetector);
 
     public void Dispose()
     {

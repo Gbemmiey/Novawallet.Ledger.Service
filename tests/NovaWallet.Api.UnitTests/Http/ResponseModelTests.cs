@@ -1,5 +1,6 @@
-using NovaWallet.Api.Core.Models.Response;
-using NovaWallet.Api.Core.Options;
+using NovaWallet.Application.Response;
+using NovaWallet.Domain.Responses;
+using NovaWallet.Infrastructure.Options;
 using System.ComponentModel.DataAnnotations;
 
 namespace NovaWallet.Api.UnitTests.Http;

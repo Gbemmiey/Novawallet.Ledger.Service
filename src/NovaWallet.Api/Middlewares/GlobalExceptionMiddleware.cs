@@ -1,5 +1,5 @@
-using NovaWallet.Api.Core.Models.Response;
-using NovaWallet.Api.Infrastructure.Http;
+using NovaWallet.Application.Response;
+using NovaWallet.Infrastructure.Http;
 using System.Diagnostics;
 
 namespace NovaWallet.Api.Middlewares;

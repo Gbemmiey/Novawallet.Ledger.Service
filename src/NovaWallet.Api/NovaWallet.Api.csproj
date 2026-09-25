@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk.Web">
+<Project Sdk="Microsoft.NET.Sdk.Web">
 
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
@@ -9,84 +9,24 @@
     <DockerfileContext>..\..</DockerfileContext>
   </PropertyGroup>
 
-
 	<ItemGroup>
-		<!-- API Versioning & OpenAPI / Scalar -->
-		<PackageReference Include="Asp.Versioning.Mvc.ApiExplorer" />
-		<PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" />
+		<!-- OpenAPI / Scalar - used directly by Features/Transfers/TransferEndpoint.cs (.WithOpenApi) -->
 		<PackageReference Include="Microsoft.AspNetCore.JsonPatch" />
 		<PackageReference Include="Microsoft.AspNetCore.OpenApi" />
-		<PackageReference Include="Npgsql.OpenTelemetry" />
 		<PackageReference Include="Scalar.AspNetCore" />
-		<PackageReference Include="Swashbuckle.AspNetCore" />
-		<PackageReference Include="Swashbuckle.AspNetCore.Annotations" />
-		<PackageReference Include="Swashbuckle.AspNetCore.SwaggerGen" />
 
-		<!-- Validation -->
+		<!-- Validation - Program.cs resolves IEnumerable&lt;IValidator&gt; as a fail-fast startup check -->
 		<PackageReference Include="FluentValidation" />
-		<PackageReference Include="FluentValidation.AspNetCore" />
-		<PackageReference Include="FluentValidation.DependencyInjectionExtensions" />
-
-		<!-- Entity Framework Core & PostgreSQL -->
-		<PackageReference Include="Microsoft.EntityFrameworkCore" />
-		<PackageReference Include="Microsoft.EntityFrameworkCore.Design">
-			<PrivateAssets>all</PrivateAssets>
-			<IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
-		</PackageReference>
-		<PackageReference Include="Microsoft.EntityFrameworkCore.Relational" />
-		<PackageReference Include="Microsoft.EntityFrameworkCore.Tools">
-			<PrivateAssets>all</PrivateAssets>
-			<IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
-		</PackageReference>
-		<PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" />
-
-		<!-- Caching & Redis -->
-		<PackageReference Include="Microsoft.Extensions.Caching.Hybrid" />
-		<PackageReference Include="Microsoft.Extensions.Caching.StackExchangeRedis" />
-		<PackageReference Include="StackExchange.Redis" />
 
 		<!-- Microsoft Extensions & Tooling -->
 		<PackageReference Include="Microsoft.FeatureManagement.AspNetCore" />
 		<PackageReference Include="Microsoft.VisualStudio.Azure.Containers.Tools.Targets" />
-
-		<!-- HTTP & Security -->
-		<PackageReference Include="NetEscapades.AspNetCore.SecurityHeaders" />
-		<PackageReference Include="RestSharp" />
-
-		<!-- OpenTelemetry & Metrics -->
-		<PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" />
-		<PackageReference Include="OpenTelemetry.Exporter.Prometheus.AspNetCore" />
-		<PackageReference Include="OpenTelemetry.Extensions.Hosting" />
-		<PackageReference Include="OpenTelemetry.Instrumentation.AspNetCore" />
-		<PackageReference Include="OpenTelemetry.Instrumentation.EntityFrameworkCore" />
-		<PackageReference Include="OpenTelemetry.Instrumentation.GrpcNetClient" />
-		<PackageReference Include="OpenTelemetry.Instrumentation.Http" />
-		<PackageReference Include="OpenTelemetry.Instrumentation.Process" />
-		<PackageReference Include="OpenTelemetry.Instrumentation.Runtime" />
-		<PackageReference Include="OpenTelemetry.Instrumentation.SqlClient" />
-		<PackageReference Include="OpenTelemetry.Instrumentation.StackExchangeRedis" />
-		<PackageReference Include="RabbitMQ.Client.OpenTelemetry" />
-
-		<!-- Serilog & Logging -->
-		<PackageReference Include="Serilog.AspNetCore" />
-		<PackageReference Include="Serilog.Enrichers.ClientInfo" />
-		<PackageReference Include="Serilog.Enrichers.Context" />
-		<PackageReference Include="Serilog.Enrichers.CorrelationId" />
-		<PackageReference Include="Serilog.Enrichers.OpenTelemetry" />
-		<PackageReference Include="Serilog.Enrichers.Process" />
-		<PackageReference Include="Serilog.Enrichers.Sensitive" />
-		<PackageReference Include="Serilog.Enrichers.Span" />
-		<PackageReference Include="Serilog.Exceptions" />
-		<PackageReference Include="Serilog.Exceptions.EntityFrameworkCore" />
-		<PackageReference Include="Serilog.Sinks.Async" />
-		<PackageReference Include="Serilog.Sinks.OpenTelemetry" />
-		<PackageReference Include="UUIDNext" />
 	</ItemGroup>
 
-  <ItemGroup>
-    <Folder Include="Application\Validators\" />
-    <Folder Include="Core\Validators\" />
-    <Folder Include="Workers\" />
-  </ItemGroup>
+	<ItemGroup>
+		<ProjectReference Include="..\NovaWallet.Domain\NovaWallet.Domain.csproj" />
+		<ProjectReference Include="..\NovaWallet.Application\NovaWallet.Application.csproj" />
+		<ProjectReference Include="..\NovaWallet.Infrastructure\NovaWallet.Infrastructure.csproj" />
+	</ItemGroup>
 
 </Project>

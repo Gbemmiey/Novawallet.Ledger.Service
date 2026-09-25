@@ -13,6 +13,9 @@ FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
 ARG BUILD_CONFIGURATION=Release
 WORKDIR /src
 COPY ["Directory.Packages.props", "."]
+COPY ["src/NovaWallet.Domain/NovaWallet.Domain.csproj", "src/NovaWallet.Domain/"]
+COPY ["src/NovaWallet.Application/NovaWallet.Application.csproj", "src/NovaWallet.Application/"]
+COPY ["src/NovaWallet.Infrastructure/NovaWallet.Infrastructure.csproj", "src/NovaWallet.Infrastructure/"]
 COPY ["src/NovaWallet.Api/NovaWallet.Api.csproj", "src/NovaWallet.Api/"]
 RUN dotnet restore "./src/NovaWallet.Api/NovaWallet.Api.csproj"
 COPY . .

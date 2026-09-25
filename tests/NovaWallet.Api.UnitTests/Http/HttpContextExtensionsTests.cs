@@ -1,5 +1,5 @@
 using Microsoft.AspNetCore.Http;
-using NovaWallet.Api.Infrastructure.Http;
+using NovaWallet.Infrastructure.Http;
 using System.Security.Claims;
 
 namespace NovaWallet.Api.UnitTests.Http;

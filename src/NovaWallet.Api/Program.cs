@@ -1,18 +1,18 @@
 using FluentValidation;
 using Microsoft.Extensions.Options;
 using Microsoft.FeatureManagement;
-using NovaWallet.Api.Core.Options;
-using NovaWallet.Api.Core.Services;
-using NovaWallet.Api.Extensions;
 using NovaWallet.Api.Features.Admin;
 using NovaWallet.Api.Features.Auth;
 using NovaWallet.Api.Features.Deposits;
 using NovaWallet.Api.Features.Transfers;
 using NovaWallet.Api.Features.Wallets;
 using NovaWallet.Api.Http;
-using NovaWallet.Api.Infrastructure.Extensions;
-using NovaWallet.Api.Infrastructure.Extensions.OpenTelemetry;
 using NovaWallet.Api.Middlewares;
+using NovaWallet.Application;
+using NovaWallet.Application.Abstractions;
+using NovaWallet.Infrastructure.Extensions;
+using NovaWallet.Infrastructure.Observability;
+using NovaWallet.Infrastructure.Options;
 using System.Text.Json.Serialization;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -30,6 +30,7 @@ try
         .RegisterApplicationDatabase(builder.Configuration)
         .RegisterApplicationOptions(builder.Configuration)
         .RegisterApplicationServices()
+        .RegisterInfrastructureServices()
         .RegisterPayloadValidation()
         .AddHttpContextAccessor()
         .AddAppHybridCache(builder.Configuration)
@@ -183,4 +184,5 @@ finally
 }
 
 // Exposes the entry point to WebApplicationFactory<Program> in tests/NovaWallet.Api.IntegrationTests.
-public partial class Program { }
+public partial class Program
+{ }

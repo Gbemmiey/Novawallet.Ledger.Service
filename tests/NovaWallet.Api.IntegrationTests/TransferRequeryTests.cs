@@ -1,5 +1,5 @@
-using NovaWallet.Api.Core.Enums;
 using NovaWallet.Api.IntegrationTests.Infrastructure;
+using NovaWallet.Domain.Enums;
 using System.Net;
 
 namespace NovaWallet.Api.IntegrationTests;

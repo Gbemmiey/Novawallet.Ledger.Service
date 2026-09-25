@@ -21,6 +21,26 @@ A high-concurrency, double-entry wallet ledger for FirstBank NovaPay, built with
     - `AuditLog` is a separate insert-only compliance record.
 - **Source wallet comes from the JWT.** The transfer body has no `sourceWalletId`, and sending one is rejected. Transfers to yourself or between currencies are also rejected.
 
+## Project structure
+
+The solution is split into four projects along Clean Architecture lines, each depending only inward:
+
+```
+src/NovaWallet.Domain          Entities, enums, NIP response codes. No package dependencies.
+src/NovaWallet.Application     Service implementations, DTOs, validators, IApplicationDbContext /
+                                IUniqueConstraintViolationDetector abstractions. References EF Core's
+                                provider-neutral packages only - no Npgsql.
+src/NovaWallet.Infrastructure  NovaWalletDbContext (Postgres), EF migrations, background workers,
+                                OpenTelemetry/Serilog wiring, rate limiting, Swagger, JWT auth.
+src/NovaWallet.Api             Program.cs, Minimal API endpoint groups, the HTTP-facing IRequestContext.
+```
+
+`NovaWallet.Application` depends on `NovaWallet.Domain` only. `NovaWallet.Infrastructure` depends on
+both and supplies the concrete, Postgres-bound implementations of the interfaces Application defines
+(`IApplicationDbContext` → `NovaWalletDbContext`, `IUniqueConstraintViolationDetector` →
+`NpgsqlUniqueConstraintViolationDetector`, `IMockUserAuthHelper` → `MockUserAuthHelper`).
+`NovaWallet.Api` composes all three and is the only project that knows about ASP.NET Core hosting.
+
 ## Flows
 
 1. **Inbound NIP deposit.**

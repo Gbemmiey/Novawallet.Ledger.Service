@@ -1,9 +1,9 @@
 using Microsoft.OpenApi.Models;
-using NovaWallet.Api.Core.Configuration;
-using NovaWallet.Api.Core.Dto.Login;
-using NovaWallet.Api.Core.Models.Response;
-using NovaWallet.Api.Core.Services;
-using NovaWallet.Api.Infrastructure.Http;
+using NovaWallet.Application.Abstractions;
+using NovaWallet.Application.Configuration;
+using NovaWallet.Application.Dto.Login;
+using NovaWallet.Application.Response;
+using NovaWallet.Infrastructure.Http;
 
 namespace NovaWallet.Api.Features.Transfers
 {

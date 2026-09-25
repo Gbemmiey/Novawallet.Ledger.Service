@@ -1,7 +1,8 @@
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.HttpResults;
-using NovaWallet.Api.Core.Models.Response;
-using NovaWallet.Api.Infrastructure.Http;
+using NovaWallet.Application.Response;
+using NovaWallet.Domain.Responses;
+using NovaWallet.Infrastructure.Http;
 using System.Text.Json;
 
 namespace NovaWallet.Api.UnitTests.Http;

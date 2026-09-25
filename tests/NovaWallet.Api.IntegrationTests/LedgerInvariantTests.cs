@@ -1,7 +1,7 @@
 using Microsoft.EntityFrameworkCore;
-using NovaWallet.Api.Core.Enums;
-using NovaWallet.Api.Core.Models;
 using NovaWallet.Api.IntegrationTests.Infrastructure;
+using NovaWallet.Domain.Entities;
+using NovaWallet.Domain.Enums;
 using Npgsql;
 
 namespace NovaWallet.Api.IntegrationTests;
